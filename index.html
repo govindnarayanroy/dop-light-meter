@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>DoP Light Meter — Face Contrast · CCT · EV</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body { background:#0d0d0f; color:#eee; font-family:-apple-system,'SF Pro',Roboto,sans-serif; height:100dvh; display:flex; flex-direction:column; overflow:hidden; }
+  header { padding:10px 14px; display:flex; justify-content:space-between; align-items:center; background:#141416; border-bottom:1px solid #222; }
+  header h1 { font-size:15px; font-weight:600; letter-spacing:.5px; color:#f5c518; }
+  header .btns button { background:#26262a; border:1px solid #3a3a40; color:#ddd; border-radius:8px; padding:6px 10px; font-size:12px; margin-left:6px; }
+  #stage { position:relative; flex:1; background:#000; overflow:hidden; }
+  video { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+  #overlay { position:absolute; inset:0; width:100%; height:100%; touch-action:none; }
+  #mode-bar { display:flex; gap:8px; padding:8px 14px; background:#141416; }
+  #mode-bar button { flex:1; padding:10px 0; border-radius:10px; border:1px solid #3a3a40; background:#1c1c20; color:#bbb; font-size:13px; font-weight:600; }
+  #mode-bar button.active-key { background:#f5c518; color:#111; border-color:#f5c518; }
+  #mode-bar button.active-fill { background:#4aa3ff; color:#111; border-color:#4aa3ff; }
+  #mode-bar button.active-cct { background:#ff7a45; color:#111; border-color:#ff7a45; }
+  #mode-bar button.active-face { background:#7ee87e; color:#111; border-color:#7ee87e; }
+  #readout { background:#141416; border-top:1px solid #222; padding:10px 14px 16px; display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; }
+  .card { background:#1c1c20; border:1px solid #2c2c32; border-radius:12px; padding:10px; text-align:center; }
+  .card .label { font-size:10px; text-transform:uppercase; letter-spacing:1px; color:#888; margin-bottom:4px; }
+  .card .value { font-size:20px; font-weight:700; }
+  .card .sub { font-size:11px; color:#999; margin-top:2px; }
+  #ratio-card .value { color:#f5c518; }
+  #cct-card .value { color:#ff9a6a; }
+  #ev-card .value { color:#8fd0ff; }
+  #hint { position:absolute; bottom:10px; left:0; right:0; text-align:center; font-size:12px; color:#fff; text-shadow:0 1px 3px #000; pointer-events:none; }
+  #err { padding:20px; color:#ff8080; font-size:14px; display:none; }
+  .note { grid-column:1 / -1; font-size:10.5px; color:#777; line-height:1.5; }
+</style>
+</head>
+<body>
+<header>
+  <h1>DoP METER</h1>
+  <div class="btns">
+    <button id="flip">Flip cam</button>
+    <button id="lock">AE Lock</button>
+    <button id="reset">Reset</button>
+  </div>
+</header>
+
+<div id="stage">
+  <video id="video" autoplay playsinline muted></video>
+  <canvas id="overlay"></canvas>
+  <div id="hint">Select KEY, tap bright side of face → select FILL, tap shadow side</div>
+</div>
+<div id="err"></div>
+
+<div id="mode-bar">
+  <button id="m-face">FACE auto</button>
+  <button id="m-key" class="active-key">KEY</button>
+  <button id="m-fill">FILL</button>
+  <button id="m-cct">CCT spot</button>
+</div>
+
+<div id="readout">
+  <div class="card" id="ratio-card">
+    <div class="label">Contrast Ratio</div>
+    <div class="value" id="ratio">—</div>
+    <div class="sub" id="stops">key : fill</div>
+  </div>
+  <div class="card" id="cct-card">
+    <div class="label">Color Temp</div>
+    <div class="value" id="cct">—</div>
+    <div class="sub" id="tint">Kelvin (approx)</div>
+  </div>
+  <div class="card" id="ev-card">
+    <div class="label">Exposure</div>
+    <div class="value" id="ev">—</div>
+    <div class="sub" id="lux">relative EV</div>
+  </div>
+  <div class="note" id="note">
+    Phone auto-exposure shifts readings. Tap <b>AE Lock</b> (if supported) or keep framing steady while sampling KEY and FILL — the <b>ratio</b> stays valid as long as both points are read in the same frame conditions. CCT is an estimate from sensor RGB (aim CCT spot at a white/grey card for best accuracy).
+  </div>
+</div>
+
+<script>
+const video = document.getElementById('video');
+const overlay = document.getElementById('overlay');
+const octx = overlay.getContext('2d');
+const grab = document.createElement('canvas');
+const gctx = grab.getContext('2d', { willReadFrequently:true });
+
+let facing = 'environment';
+let stream = null, track = null;
+let mode = 'key';                       // key | fill | cct
+let pts = { key:null, fill:null, cct:null };   // {x,y} in video pixel coords
+const PATCH = 12;                       // half-size of sample patch (px)
+
+function err(msg){ const e=document.getElementById('err'); e.style.display='block'; e.textContent=msg; }
+
+async function startCam(){
+  if(stream) stream.getTracks().forEach(t=>t.stop());
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({
+      video:{ facingMode:facing, width:{ideal:1280}, height:{ideal:720} }, audio:false
+    });
+    video.srcObject = stream;
+    track = stream.getVideoTracks()[0];
+  }catch(e){ err('Camera access failed: '+e.message+'. Open this file over HTTPS or localhost, and allow camera permission.'); }
+}
+startCam();
+
+document.getElementById('flip').onclick = ()=>{ facing = facing==='environment'?'user':'environment'; pts={key:null,fill:null,cct:null}; startCam(); };
+document.getElementById('reset').onclick = ()=>{ pts={key:null,fill:null,cct:null}; faceBox=null; faceRatioEMA=null; };
+document.getElementById('lock').onclick = async ()=>{
+  if(!track) return;
+  const caps = track.getCapabilities ? track.getCapabilities() : {};
+  try{
+    if(caps.exposureMode && caps.exposureMode.includes('manual')){
+      await track.applyConstraints({ advanced:[{ exposureMode:'manual' }] });
+      document.getElementById('lock').textContent='AE Locked';
+    } else if (caps.exposureMode && caps.exposureMode.includes('continuous')){
+      // some devices support single-shot lock
+      await track.applyConstraints({ advanced:[{ exposureMode:'single-shot' }] }).catch(()=>{});
+      document.getElementById('lock').textContent='AE Lock?';
+      alert('Full manual exposure lock is not supported by this browser/camera. Keep framing steady while sampling.');
+    } else {
+      alert('Exposure lock not supported here. Keep framing steady — ratios remain valid within a steady frame.');
+    }
+  }catch(e){ alert('Could not lock exposure: '+e.message); }
+};
+
+const modeBtns = { face:document.getElementById('m-face'), key:document.getElementById('m-key'), fill:document.getElementById('m-fill'), cct:document.getElementById('m-cct') };
+function setMode(m){
+  mode = m;
+  modeBtns.face.className = m==='face' ? 'active-face' : '';
+  modeBtns.key.className  = m==='key'  ? 'active-key'  : '';
+  modeBtns.fill.className = m==='fill' ? 'active-fill' : '';
+  modeBtns.cct.className  = m==='cct'  ? 'active-cct'  : '';
+  document.getElementById('hint').textContent =
+    m==='face'? 'Frame the face — contrast ratio is measured automatically' :
+    m==='key' ? 'Tap the BRIGHT (key) side of the face' :
+    m==='fill'? 'Tap the SHADOW (fill) side of the face' :
+                'Tap a white/grey card or neutral surface for color temp';
+  if(m==='face') initFaceDetector();
+}
+modeBtns.face.onclick = ()=>setMode('face');
+modeBtns.key.onclick = ()=>setMode('key');
+modeBtns.fill.onclick = ()=>setMode('fill');
+modeBtns.cct.onclick = ()=>setMode('cct');
+
+// ---------- FACE auto mode: detect face, split at nose, key:fill from face halves ----------
+let faceDet = null, faceReady = false, faceBusy = false, faceLoadFailed = false;
+let faceBox = null;   // {x,y,w,h,noseX} in video px
+let faceRatioEMA = null;
+const detCanvas = document.createElement('canvas');
+const dctx = detCanvas.getContext('2d', { willReadFrequently:true });
+
+function initFaceDetector(){
+  if(faceDet || faceLoadFailed) return;
+  const s = document.createElement('script');
+  s.src = 'https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/face_detection.js';
+  s.onload = async ()=>{
+    try{
+      faceDet = new FaceDetection({ locateFile: f => 'https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/'+f });
+      faceDet.setOptions({ model:'short', minDetectionConfidence:0.5 });
+      faceDet.onResults(r=>{
+        faceBusy = false;
+        if(r.detections && r.detections.length){
+          const d = r.detections[0];
+          const bb = d.boundingBox;
+          const kp = d.landmarks || [];               // 0:R eye 1:L eye 2:nose 3:mouth 4:R ear 5:L ear
+          const W = grab.width, H = grab.height;
+          faceBox = {
+            x:(bb.xCenter - bb.width/2)*W, y:(bb.yCenter - bb.height/2)*H,
+            w:bb.width*W, h:bb.height*H,
+            noseX: kp[2] ? kp[2].x*W : bb.xCenter*W
+          };
+        } else faceBox = null;
+      });
+      await faceDet.initialize();
+      faceReady = true;
+    }catch(e){ faceLoadFailed = true; console.warn('Face detector init failed', e); }
+  };
+  s.onerror = ()=>{ faceLoadFailed = true; };
+  document.head.appendChild(s);
+}
+
+async function detectFace(){
+  if(!faceReady || faceBusy || !video.videoWidth) return;
+  faceBusy = true;
+  const dw = 320, dh = Math.round(320*video.videoHeight/video.videoWidth);
+  if(detCanvas.width!==dw){ detCanvas.width=dw; detCanvas.height=dh; }
+  dctx.drawImage(video,0,0,dw,dh);
+  try{ await faceDet.send({ image: detCanvas }); }catch(e){ faceBusy=false; }
+}
+setInterval(()=>{ if(mode==='face') detectFace(); }, 300);
+
+// Median linear luminance of each half of the face (split at nose), skin region only
+function faceHalvesRatio(fb){
+  const x0=Math.max(0, fb.x+fb.w*0.10), x1=Math.min(grab.width,  fb.x+fb.w*0.90);
+  const y0=Math.max(0, fb.y+fb.h*0.22), y1=Math.min(grab.height, fb.y+fb.h*0.88);
+  const w=Math.round(x1-x0), h=Math.round(y1-y0);
+  if(w<8||h<8) return null;
+  const img = gctx.getImageData(Math.round(x0), Math.round(y0), w, h).data;
+  const L=[], R=[];
+  const split = fb.noseX - x0;
+  for(let py=0; py<h; py+=2) for(let px=0; px<w; px+=2){
+    const i=(py*w+px)*4;
+    const Y = 0.2126*srgb2lin(img[i]) + 0.7152*srgb2lin(img[i+1]) + 0.0722*srgb2lin(img[i+2]);
+    (px<split ? L : R).push(Y);
+  }
+  if(L.length<20 || R.length<20) return null;
+  const med = a => { a.sort((p,q)=>p-q); return a[a.length>>1]; };
+  const lY=med(L), rY=med(R);
+  if(Math.min(lY,rY)<=0.0005) return null;
+  const key = Math.max(lY,rY), fill = Math.min(lY,rY);
+  return { ratio:key/fill, keySide: lY>=rY?'left':'right', lY, rY };
+}
+
+// Map a tap on the overlay to video pixel coords (object-fit: cover math)
+overlay.addEventListener('pointerdown', ev=>{
+  if(!video.videoWidth || mode==='face') return;
+  const r = overlay.getBoundingClientRect();
+  const scale = Math.max(r.width/video.videoWidth, r.height/video.videoHeight);
+  const dispW = video.videoWidth*scale, dispH = video.videoHeight*scale;
+  const offX = (dispW - r.width)/2, offY = (dispH - r.height)/2;
+  const vx = (ev.clientX - r.left + offX)/scale;
+  const vy = (ev.clientY - r.top  + offY)/scale;
+  if(vx<0||vy<0||vx>video.videoWidth||vy>video.videoHeight) return;
+  pts[mode] = { x:vx, y:vy };
+  if(mode==='key') setMode('fill');           // auto-advance key → fill
+});
+
+// ---------- color math ----------
+const srgb2lin = c => { c/=255; return c<=0.04045 ? c/12.92 : Math.pow((c+0.055)/1.055, 2.4); };
+
+function samplePatch(x, y){
+  const x0 = Math.max(0, Math.round(x)-PATCH), y0 = Math.max(0, Math.round(y)-PATCH);
+  const w = Math.min(PATCH*2, grab.width-x0), h = Math.min(PATCH*2, grab.height-y0);
+  if(w<=0||h<=0) return null;
+  const d = gctx.getImageData(x0, y0, w, h).data;
+  let R=0,G=0,B=0,n=0;
+  for(let i=0;i<d.length;i+=4){ R+=d[i]; G+=d[i+1]; B+=d[i+2]; n++; }
+  R/=n; G/=n; B/=n;
+  const rl=srgb2lin(R), gl=srgb2lin(G), bl=srgb2lin(B);
+  const Y = 0.2126*rl + 0.7152*gl + 0.0722*bl;   // linear luminance 0..1
+  return { R,G,B, rl,gl,bl, Y };
+}
+
+// McCamy CCT approximation from linear sRGB
+function cctFrom(s){
+  const X = 0.4124*s.rl + 0.3576*s.gl + 0.1805*s.bl;
+  const Y = s.Y;
+  const Z = 0.0193*s.rl + 0.1192*s.gl + 0.9505*s.bl;
+  const sum = X+Y+Z; if(sum<=0) return null;
+  const x = X/sum, y = Y/sum;
+  const n = (x - 0.3320) / (0.1858 - y);
+  const cct = 449*n**3 + 3525*n**2 + 6823.3*n + 5520.33;
+  // Duv-ish tint hint (above/below Planckian, crude)
+  const tint = y - (-2.6*x*x + 2.7*x - 0.24); // heuristic curve
+  return { cct, tint };
+}
+
+// Average whole-frame luminance for relative EV
+function frameLuma(){
+  const d = gctx.getImageData(0,0,grab.width,grab.height).data;
+  let sum=0, n=0;
+  for(let i=0;i<d.length;i+=16){ // stride for speed
+    sum += 0.2126*srgb2lin(d[i]) + 0.7152*srgb2lin(d[i+1]) + 0.0722*srgb2lin(d[i+2]);
+    n++;
+  }
+  return sum/n;
+}
+
+// ---------- render loop ----------
+function loop(){
+  requestAnimationFrame(loop);
+  if(!video.videoWidth) return;
+  if(grab.width!==video.videoWidth){ grab.width=video.videoWidth; grab.height=video.videoHeight; }
+  gctx.drawImage(video,0,0);
+
+  // size overlay to element
+  const r = overlay.getBoundingClientRect();
+  if(overlay.width!==r.width){ overlay.width=r.width; overlay.height=r.height; }
+  octx.clearRect(0,0,overlay.width,overlay.height);
+
+  const scale = Math.max(r.width/video.videoWidth, r.height/video.videoHeight);
+  const offX = (video.videoWidth*scale - r.width)/2, offY = (video.videoHeight*scale - r.height)/2;
+  const toScreen = p => ({ x:p.x*scale-offX, y:p.y*scale-offY });
+
+  const colors = { key:'#f5c518', fill:'#4aa3ff', cct:'#ff7a45' };
+  let samples = {};
+  for(const k of ['key','fill','cct']){
+    if(!pts[k]) continue;
+    samples[k] = samplePatch(pts[k].x, pts[k].y);
+    const s = toScreen(pts[k]);
+    octx.strokeStyle = colors[k]; octx.lineWidth=2;
+    octx.strokeRect(s.x-PATCH, s.y-PATCH, PATCH*2, PATCH*2);
+    octx.fillStyle = colors[k]; octx.font='bold 12px sans-serif';
+    octx.fillText(k.toUpperCase(), s.x-PATCH, s.y-PATCH-5);
+  }
+
+  // Contrast ratio
+  const ratioEl=document.getElementById('ratio'), stopsEl=document.getElementById('stops');
+  if(mode==='face'){
+    if(faceLoadFailed){
+      ratioEl.textContent='—'; stopsEl.textContent='face detect unavailable (offline?) — use KEY/FILL taps';
+    } else if(faceBox){
+      // draw face box + nose split line
+      const tl = toScreen({x:faceBox.x, y:faceBox.y});
+      octx.strokeStyle='#7ee87e'; octx.lineWidth=2;
+      octx.strokeRect(tl.x, tl.y, faceBox.w*scale, faceBox.h*scale);
+      const ns = toScreen({x:faceBox.noseX, y:faceBox.y});
+      octx.setLineDash([6,4]);
+      octx.beginPath(); octx.moveTo(ns.x, ns.y); octx.lineTo(ns.x, ns.y+faceBox.h*scale); octx.stroke();
+      octx.setLineDash([]);
+      const fr = faceHalvesRatio(faceBox);
+      if(fr){
+        faceRatioEMA = faceRatioEMA===null ? fr.ratio : faceRatioEMA*0.8 + fr.ratio*0.2;
+        const stops = Math.log2(faceRatioEMA);
+        ratioEl.textContent = faceRatioEMA.toFixed(1)+':1';
+        stopsEl.textContent = stops.toFixed(1)+' stops · key '+fr.keySide+' · '+ratioLabel(faceRatioEMA);
+        octx.fillStyle='#7ee87e'; octx.font='bold 12px sans-serif';
+        octx.fillText('KEY', fr.keySide==='left' ? tl.x+4 : tl.x+faceBox.w*scale-34, tl.y-6);
+      } else { ratioEl.textContent='—'; stopsEl.textContent='face too small/dark'; }
+    } else {
+      ratioEl.textContent='—';
+      stopsEl.textContent = faceReady ? 'no face detected' : 'loading face model…';
+      faceRatioEMA=null;
+    }
+  } else if(samples.key && samples.fill && samples.fill.Y>0){
+    let k=samples.key.Y, f=samples.fill.Y;
+    if(f>k){ const t=k; k=f; f=t; } // always brighter:darker
+    const ratio = k/f;
+    const stops = Math.log2(ratio);
+    ratioEl.textContent = ratio.toFixed(1)+':1';
+    stopsEl.textContent = stops.toFixed(1)+' stops · '+ratioLabel(ratio);
+  } else { ratioEl.textContent='—'; stopsEl.textContent='key : fill'; }
+
+  // CCT — cct spot if set, else face skin (face mode), else key patch, else frame center
+  let cctSample = samples.cct
+    || (mode==='face' && faceBox ? samplePatch(faceBox.x+faceBox.w/2, faceBox.y+faceBox.h*0.6) : null)
+    || samples.key || samplePatch(video.videoWidth/2, video.videoHeight/2);
+  const cctEl=document.getElementById('cct'), tintEl=document.getElementById('tint');
+  if(cctSample && cctSample.Y>0.01){
+    const c = cctFrom(cctSample);
+    if(c && c.cct>1500 && c.cct<20000){
+      cctEl.textContent = Math.round(c.cct/50)*50+'K';
+      tintEl.textContent = c.tint>0.006 ? 'tint: green' : c.tint<-0.006 ? 'tint: magenta' : 'tint: neutral';
+    } else { cctEl.textContent='—'; tintEl.textContent='out of range'; }
+  } else { cctEl.textContent='—'; tintEl.textContent='too dark'; }
+
+  // Relative EV
+  const Y = frameLuma();
+  const ev = Y>0 ? Math.log2(Y/0.18) : -Infinity; // 0 EVr = 18% grey average
+  document.getElementById('ev').textContent = (ev>=0?'+':'')+ev.toFixed(1)+' EVr';
+  document.getElementById('lux').textContent = 'vs 18% grey · frame avg';
+}
+function ratioLabel(x){
+  if(x<1.6) return 'flat (≈1:1)';
+  if(x<3)  return 'soft (≈2:1)';
+  if(x<6)  return 'classic (≈4:1)';
+  if(x<12) return 'dramatic (≈8:1)';
+  return 'high contrast (16:1+)';
+}
+loop();
+</script>
+</body>
+</html>
