@@ -19,12 +19,14 @@
   #mode-bar button.active-fill { background:#4aa3ff; color:#111; border-color:#4aa3ff; }
   #mode-bar button.active-cct { background:#ff7a45; color:#111; border-color:#ff7a45; }
   #mode-bar button.active-face { background:#7ee87e; color:#111; border-color:#7ee87e; }
-  #readout { background:#141416; border-top:1px solid #222; padding:10px 14px 16px; display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; }
+  #mode-bar button.active-bg { background:#c78bff; color:#111; border-color:#c78bff; }
+  #readout { background:#141416; border-top:1px solid #222; padding:10px 14px 16px; display:grid; grid-template-columns:1fr 1fr; gap:10px; }
   .card { background:#1c1c20; border:1px solid #2c2c32; border-radius:12px; padding:10px; text-align:center; }
   .card .label { font-size:10px; text-transform:uppercase; letter-spacing:1px; color:#888; margin-bottom:4px; }
   .card .value { font-size:20px; font-weight:700; }
   .card .sub { font-size:11px; color:#999; margin-top:2px; }
   #ratio-card .value { color:#f5c518; }
+  #bg-card .value { color:#c78bff; }
   #cct-card .value { color:#ff9a6a; }
   #ev-card .value { color:#8fd0ff; }
   #hint { position:absolute; bottom:10px; left:0; right:0; text-align:center; font-size:12px; color:#fff; text-shadow:0 1px 3px #000; pointer-events:none; }
@@ -53,7 +55,8 @@
   <button id="m-face">FACE auto</button>
   <button id="m-key" class="active-key">KEY</button>
   <button id="m-fill">FILL</button>
-  <button id="m-cct">CCT spot</button>
+  <button id="m-bg">BG</button>
+  <button id="m-cct">CCT</button>
 </div>
 
 <div id="readout">
@@ -61,6 +64,11 @@
     <div class="label">Contrast Ratio</div>
     <div class="value" id="ratio">—</div>
     <div class="sub" id="stops">key : fill</div>
+  </div>
+  <div class="card" id="bg-card">
+    <div class="label">Key : Background</div>
+    <div class="value" id="bgratio">—</div>
+    <div class="sub" id="bgsub">face vs BG</div>
   </div>
   <div class="card" id="cct-card">
     <div class="label">Color Temp</div>
@@ -73,7 +81,7 @@
     <div class="sub" id="lux">relative EV</div>
   </div>
   <div class="note" id="note">
-    Phone auto-exposure shifts readings. Tap <b>AE Lock</b> (if supported) or keep framing steady while sampling KEY and FILL — the <b>ratio</b> stays valid as long as both points are read in the same frame conditions. CCT is an estimate from sensor RGB (aim CCT spot at a white/grey card for best accuracy).
+    Phone auto-exposure shifts readings. Tap <b>AE Lock</b> (if supported) or keep framing steady while sampling KEY, FILL and BG — <b>ratios</b> stay valid as long as all points are read in the same frame conditions. <b>Key : Background</b> reads how far the set behind the subject sits under the key (auto in FACE mode, or tap KEY then BG). CCT is an estimate from sensor RGB (aim CCT at a white/grey card for best accuracy).
   </div>
 </div>
 
@@ -86,8 +94,8 @@ const gctx = grab.getContext('2d', { willReadFrequently:true });
 
 let facing = 'environment';
 let stream = null, track = null;
-let mode = 'key';                       // key | fill | cct
-let pts = { key:null, fill:null, cct:null };   // {x,y} in video pixel coords
+let mode = 'key';                       // face | key | fill | bg | cct
+let pts = { key:null, fill:null, bg:null, cct:null };   // {x,y} in video pixel coords
 const PATCH = 12;                       // half-size of sample patch (px)
 
 function err(msg){ const e=document.getElementById('err'); e.style.display='block'; e.textContent=msg; }
@@ -104,8 +112,8 @@ async function startCam(){
 }
 startCam();
 
-document.getElementById('flip').onclick = ()=>{ facing = facing==='environment'?'user':'environment'; pts={key:null,fill:null,cct:null}; startCam(); };
-document.getElementById('reset').onclick = ()=>{ pts={key:null,fill:null,cct:null}; faceBox=null; faceRatioEMA=null; };
+document.getElementById('flip').onclick = ()=>{ facing = facing==='environment'?'user':'environment'; pts={key:null,fill:null,bg:null,cct:null}; startCam(); };
+document.getElementById('reset').onclick = ()=>{ pts={key:null,fill:null,bg:null,cct:null}; faceBox=null; faceRatioEMA=null; bgY=null; bgRatioEMA=null; };
 document.getElementById('lock').onclick = async ()=>{
   if(!track) return;
   const caps = track.getCapabilities ? track.getCapabilities() : {};
@@ -124,29 +132,34 @@ document.getElementById('lock').onclick = async ()=>{
   }catch(e){ alert('Could not lock exposure: '+e.message); }
 };
 
-const modeBtns = { face:document.getElementById('m-face'), key:document.getElementById('m-key'), fill:document.getElementById('m-fill'), cct:document.getElementById('m-cct') };
+const modeBtns = { face:document.getElementById('m-face'), key:document.getElementById('m-key'), fill:document.getElementById('m-fill'), bg:document.getElementById('m-bg'), cct:document.getElementById('m-cct') };
 function setMode(m){
   mode = m;
   modeBtns.face.className = m==='face' ? 'active-face' : '';
   modeBtns.key.className  = m==='key'  ? 'active-key'  : '';
   modeBtns.fill.className = m==='fill' ? 'active-fill' : '';
+  modeBtns.bg.className   = m==='bg'   ? 'active-bg'   : '';
   modeBtns.cct.className  = m==='cct'  ? 'active-cct'  : '';
   document.getElementById('hint').textContent =
-    m==='face'? 'Frame the face — contrast ratio is measured automatically' :
+    m==='face'? 'Frame the face — face contrast + BG separation are measured automatically' :
     m==='key' ? 'Tap the BRIGHT (key) side of the face' :
     m==='fill'? 'Tap the SHADOW (fill) side of the face' :
+    m==='bg'  ? 'Tap the BACKGROUND behind the subject' :
                 'Tap a white/grey card or neutral surface for color temp';
   if(m==='face') initFaceDetector();
 }
 modeBtns.face.onclick = ()=>setMode('face');
 modeBtns.key.onclick = ()=>setMode('key');
 modeBtns.fill.onclick = ()=>setMode('fill');
+modeBtns.bg.onclick = ()=>setMode('bg');
 modeBtns.cct.onclick = ()=>setMode('cct');
 
 // ---------- FACE auto mode: detect face, split at nose, key:fill from face halves ----------
 let faceDet = null, faceReady = false, faceBusy = false, faceLoadFailed = false;
 let faceBox = null;   // {x,y,w,h,noseX} in video px
 let faceRatioEMA = null;
+let bgY = null;       // median linear luminance of scene behind/around subject (face mode)
+let bgRatioEMA = null;
 const detCanvas = document.createElement('canvas');
 const dctx = detCanvas.getContext('2d', { willReadFrequently:true });
 
@@ -183,12 +196,36 @@ function initFaceDetector(){
 async function detectFace(){
   if(!faceReady || faceBusy || !video.videoWidth) return;
   faceBusy = true;
-  const dw = 320, dh = Math.round(320*video.videoHeight/video.videoWidth);
+  const dw = 480, dh = Math.round(480*video.videoHeight/video.videoWidth);
   if(detCanvas.width!==dw){ detCanvas.width=dw; detCanvas.height=dh; }
   dctx.drawImage(video,0,0,dw,dh);
   try{ await faceDet.send({ image: detCanvas }); }catch(e){ faceBusy=false; }
 }
-setInterval(()=>{ if(mode==='face') detectFace(); }, 300);
+setInterval(()=>{ if(mode==='face'){ detectFace(); bgY = faceBox ? bgMedianLuma(faceBox) : null; } }, 300);
+
+// Median linear luminance of the scene excluding the subject:
+// skips an expanded face box plus a body column below it, so walls/set behind the
+// subject dominate the sample.
+function bgMedianLuma(fb){
+  const W = grab.width, H = grab.height;
+  if(!W) return null;
+  const fx0 = fb.x - fb.w*0.30, fx1 = fb.x + fb.w*1.30;
+  const fy0 = fb.y - fb.h*0.60, fy1 = fb.y + fb.h*1.15;     // face + hair
+  const bx0 = fb.x - fb.w*0.60, bx1 = fb.x + fb.w*1.60;     // shoulders/body
+  const by  = fb.y + fb.h*0.85;
+  const d = gctx.getImageData(0,0,W,H).data;
+  const step = Math.max(2, Math.round(W/160));
+  const vals = [];
+  for(let y=0; y<H; y+=step) for(let x=0; x<W; x+=step){
+    if(x>fx0 && x<fx1 && y>fy0 && y<fy1) continue;
+    if(x>bx0 && x<bx1 && y>by) continue;
+    const i=(y*W+x)*4;
+    vals.push(0.2126*srgb2lin(d[i]) + 0.7152*srgb2lin(d[i+1]) + 0.0722*srgb2lin(d[i+2]));
+  }
+  if(vals.length<50) return null;
+  vals.sort((a,b)=>a-b);
+  return vals[vals.length>>1];
+}
 
 // Median linear luminance of each half of the face (split at nose), skin region only
 function faceHalvesRatio(fb){
@@ -221,7 +258,7 @@ overlay.addEventListener('pointerdown', ev=>{
   const offX = (dispW - r.width)/2, offY = (dispH - r.height)/2;
   const vx = (ev.clientX - r.left + offX)/scale;
   const vy = (ev.clientY - r.top  + offY)/scale;
-  if(vx<0||vy<0||vx>video.videoWidth||vy>video.videoHeight) return;
+  if(!isFinite(vx)||!isFinite(vy)||vx<0||vy<0||vx>video.videoWidth||vy>video.videoHeight) return;
   pts[mode] = { x:vx, y:vy };
   if(mode==='key') setMode('fill');           // auto-advance key → fill
 });
@@ -251,8 +288,8 @@ function cctFrom(s){
   const x = X/sum, y = Y/sum;
   const n = (x - 0.3320) / (0.1858 - y);
   const cct = 449*n**3 + 3525*n**2 + 6823.3*n + 5520.33;
-  // Duv-ish tint hint (above/below Planckian, crude)
-  const tint = y - (-2.6*x*x + 2.7*x - 0.24); // heuristic curve
+  // Tint: offset above/below the CIE daylight locus (passes through D65 exactly)
+  const tint = y - (2.870*x - 3.000*x*x - 0.275);
   return { cct, tint };
 }
 
@@ -283,9 +320,9 @@ function loop(){
   const offX = (video.videoWidth*scale - r.width)/2, offY = (video.videoHeight*scale - r.height)/2;
   const toScreen = p => ({ x:p.x*scale-offX, y:p.y*scale-offY });
 
-  const colors = { key:'#f5c518', fill:'#4aa3ff', cct:'#ff7a45' };
+  const colors = { key:'#f5c518', fill:'#4aa3ff', bg:'#c78bff', cct:'#ff7a45' };
   let samples = {};
-  for(const k of ['key','fill','cct']){
+  for(const k of ['key','fill','bg','cct']){
     if(!pts[k]) continue;
     samples[k] = samplePatch(pts[k].x, pts[k].y);
     const s = toScreen(pts[k]);
@@ -297,6 +334,8 @@ function loop(){
 
   // Contrast ratio
   const ratioEl=document.getElementById('ratio'), stopsEl=document.getElementById('stops');
+  const bgEl=document.getElementById('bgratio'), bgSubEl=document.getElementById('bgsub');
+  let keyForBG = null;   // linear luminance of the key side, set per mode below
   if(mode==='face'){
     if(faceLoadFailed){
       ratioEl.textContent='—'; stopsEl.textContent='face detect unavailable (offline?) — use KEY/FILL taps';
@@ -317,6 +356,7 @@ function loop(){
         stopsEl.textContent = stops.toFixed(1)+' stops · key '+fr.keySide+' · '+ratioLabel(faceRatioEMA);
         octx.fillStyle='#7ee87e'; octx.font='bold 12px sans-serif';
         octx.fillText('KEY', fr.keySide==='left' ? tl.x+4 : tl.x+faceBox.w*scale-34, tl.y-6);
+        keyForBG = Math.max(fr.lY, fr.rY);
       } else { ratioEl.textContent='—'; stopsEl.textContent='face too small/dark'; }
     } else {
       ratioEl.textContent='—';
@@ -331,6 +371,21 @@ function loop(){
     ratioEl.textContent = ratio.toFixed(1)+':1';
     stopsEl.textContent = stops.toFixed(1)+' stops · '+ratioLabel(ratio);
   } else { ratioEl.textContent='—'; stopsEl.textContent='key : fill'; }
+  if(mode!=='face' && samples.key) keyForBG = samples.key.Y;
+
+  // Key : Background separation
+  const bgLum = mode==='face' ? bgY : (samples.bg ? samples.bg.Y : null);
+  if(keyForBG!==null && keyForBG>0.001 && bgLum!==null){
+    const raw = keyForBG / Math.max(bgLum, 0.0005);
+    if(mode==='face'){ bgRatioEMA = bgRatioEMA===null ? raw : bgRatioEMA*0.8 + raw*0.2; }
+    const kb = mode==='face' ? bgRatioEMA : raw;
+    const st = Math.log2(kb);
+    bgEl.textContent = kb>=99 ? '99+:1' : kb>=1 ? kb.toFixed(1)+':1' : '1:'+(1/kb).toFixed(1);
+    bgSubEl.textContent = (st>=0?'+':'')+st.toFixed(1)+' stops · '+sepLabel(st);
+  } else {
+    bgEl.textContent='—'; bgRatioEMA=null;
+    bgSubEl.textContent = mode==='face' ? 'face vs BG' : (samples.bg ? 'tap KEY too' : 'tap KEY + BG');
+  }
 
   // CCT — cct spot if set, else face skin (face mode), else key patch, else frame center
   let cctSample = samples.cct
@@ -357,6 +412,14 @@ function ratioLabel(x){
   if(x<6)  return 'classic (≈4:1)';
   if(x<12) return 'dramatic (≈8:1)';
   return 'high contrast (16:1+)';
+}
+function sepLabel(st){
+  if(st<-0.5) return 'BG hotter — silhouette/high-key';
+  if(st<0.5)  return 'BG ≈ key — flat depth';
+  if(st<1.5)  return 'subtle sep (~1 stop down)';
+  if(st<2.5)  return 'classic sep (~2 stops down)';
+  if(st<4)    return 'moody (2½–4 stops down)';
+  return 'night / void BG';
 }
 loop();
 </script>
