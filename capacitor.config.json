@@ -1,0 +1,11 @@
+{
+  "appId": "com.govindroy.dopmeter",
+  "appName": "DoP Meter",
+  "webDir": "www",
+  "backgroundColor": "#0d0d0f",
+  "ios": {
+    "contentInset": "never",
+    "backgroundColor": "#0d0d0f",
+    "allowsLinkPreview": false
+  }
+}

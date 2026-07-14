@@ -2,12 +2,12 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>DoP Light Meter — Face Contrast · CCT · EV</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   body { background:#0d0d0f; color:#eee; font-family:-apple-system,'SF Pro',Roboto,sans-serif; height:100dvh; display:flex; flex-direction:column; overflow:hidden; }
-  header { padding:10px 14px; display:flex; justify-content:space-between; align-items:center; background:#141416; border-bottom:1px solid #222; }
+  header { padding:calc(10px + env(safe-area-inset-top)) 14px 10px; display:flex; justify-content:space-between; align-items:center; background:#141416; border-bottom:1px solid #222; }
   header h1 { font-size:15px; font-weight:600; letter-spacing:.5px; color:#f5c518; }
   header .btns button { background:#26262a; border:1px solid #3a3a40; color:#ddd; border-radius:8px; padding:6px 10px; font-size:12px; margin-left:6px; }
   header .btns button.fc-on { background:#e0403c; border-color:#e0403c; color:#fff; }
@@ -32,7 +32,7 @@
   #gel .chips input { width:64px; background:#1c1c20; border:1px solid #3a3a40; color:#eee; border-radius:8px; padding:5px 6px; font-size:12px; }
   #gel .res { color:#ffd9a8; }
   #gel .dim { color:#888; font-size:11px; }
-  #readout { background:#141416; border-top:1px solid #222; padding:10px 14px 16px; display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  #readout { background:#141416; border-top:1px solid #222; padding:10px 14px calc(16px + env(safe-area-inset-bottom)); display:grid; grid-template-columns:1fr 1fr; gap:10px; }
   .card { background:#1c1c20; border:1px solid #2c2c32; border-radius:12px; padding:10px; text-align:center; }
   .card .label { font-size:10px; text-transform:uppercase; letter-spacing:1px; color:#888; margin-bottom:4px; }
   .card .value { font-size:20px; font-weight:700; }
@@ -202,10 +202,10 @@ const dctx = detCanvas.getContext('2d', { willReadFrequently:true });
 function initFaceDetector(){
   if(faceDet || faceLoadFailed) return;
   const s = document.createElement('script');
-  s.src = 'https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/face_detection.js';
+  s.src = 'mediapipe/face_detection.js';
   s.onload = async ()=>{
     try{
-      faceDet = new FaceDetection({ locateFile: f => 'https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/'+f });
+      faceDet = new FaceDetection({ locateFile: f => 'mediapipe/'+f });
       faceDet.setOptions({ model:'short', minDetectionConfidence:0.5 });
       faceDet.onResults(r=>{
         faceBusy = false;

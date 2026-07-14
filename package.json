@@ -1,0 +1,26 @@
+{
+  "name": "dop-light-meter",
+  "version": "1.0.0",
+  "description": "Single-file web app for cinematographers:",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/govindnarayanroy/dop-light-meter.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/govindnarayanroy/dop-light-meter/issues"
+  },
+  "homepage": "https://github.com/govindnarayanroy/dop-light-meter#readme",
+  "dependencies": {
+    "@capacitor/cli": "^8.4.1",
+    "@capacitor/core": "^8.4.1",
+    "@capacitor/ios": "^8.4.1",
+    "@mediapipe/face_detection": "^0.4.1646425229"
+  }
+}
