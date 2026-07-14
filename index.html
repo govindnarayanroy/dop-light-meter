@@ -10,6 +10,7 @@
   header { padding:10px 14px; display:flex; justify-content:space-between; align-items:center; background:#141416; border-bottom:1px solid #222; }
   header h1 { font-size:15px; font-weight:600; letter-spacing:.5px; color:#f5c518; }
   header .btns button { background:#26262a; border:1px solid #3a3a40; color:#ddd; border-radius:8px; padding:6px 10px; font-size:12px; margin-left:6px; }
+  header .btns button.fc-on { background:#e0403c; border-color:#e0403c; color:#fff; }
   #stage { position:relative; flex:1; background:#000; overflow:hidden; }
   video { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
   #overlay { position:absolute; inset:0; width:100%; height:100%; touch-action:none; }
@@ -20,6 +21,17 @@
   #mode-bar button.active-cct { background:#ff7a45; color:#111; border-color:#ff7a45; }
   #mode-bar button.active-face { background:#7ee87e; color:#111; border-color:#7ee87e; }
   #mode-bar button.active-bg { background:#c78bff; color:#111; border-color:#c78bff; }
+  #mode-bar button.active-spot { background:#ff6ea9; color:#111; border-color:#ff6ea9; }
+  #fc-legend { display:none; position:absolute; top:8px; left:50%; transform:translateX(-50%); background:rgba(10,10,12,.75); border-radius:8px; padding:4px 10px; font-size:10px; letter-spacing:.3px; white-space:nowrap; }
+  #fc-legend span { display:inline-block; margin:0 5px; }
+  #fc-legend i { display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:3px; vertical-align:-1px; }
+  #gel { display:none; background:#141416; border-top:1px solid #222; padding:10px 14px; font-size:12.5px; line-height:1.55; }
+  #gel .chips { margin:6px 0; display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+  #gel .chips button { background:#26262a; border:1px solid #3a3a40; color:#ddd; border-radius:8px; padding:5px 10px; font-size:12px; }
+  #gel .chips button.sel { background:#ff9a6a; color:#111; border-color:#ff9a6a; }
+  #gel .chips input { width:64px; background:#1c1c20; border:1px solid #3a3a40; color:#eee; border-radius:8px; padding:5px 6px; font-size:12px; }
+  #gel .res { color:#ffd9a8; }
+  #gel .dim { color:#888; font-size:11px; }
   #readout { background:#141416; border-top:1px solid #222; padding:10px 14px 16px; display:grid; grid-template-columns:1fr 1fr; gap:10px; }
   .card { background:#1c1c20; border:1px solid #2c2c32; border-radius:12px; padding:10px; text-align:center; }
   .card .label { font-size:10px; text-transform:uppercase; letter-spacing:1px; color:#888; margin-bottom:4px; }
@@ -38,6 +50,7 @@
 <header>
   <h1>DoP METER</h1>
   <div class="btns">
+    <button id="fc">FC</button>
     <button id="flip">Flip cam</button>
     <button id="lock">AE Lock</button>
     <button id="reset">Reset</button>
@@ -47,6 +60,9 @@
 <div id="stage">
   <video id="video" autoplay playsinline muted></video>
   <canvas id="overlay"></canvas>
+  <div id="fc-legend">
+    <span><i style="background:#f00"></i>clip</span><span><i style="background:#ff8c00"></i>99%</span><span><i style="background:#e6e600"></i>hi-light</span><span><i style="background:#ff69b4"></i>skin</span><span><i style="background:#0c0"></i>18% grey</span><span><i style="background:#0020ff"></i>shadow</span><span><i style="background:#4000a0"></i>crushed</span>
+  </div>
   <div id="hint">Select KEY, tap bright side of face → select FILL, tap shadow side</div>
 </div>
 <div id="err"></div>
@@ -56,7 +72,23 @@
   <button id="m-key" class="active-key">KEY</button>
   <button id="m-fill">FILL</button>
   <button id="m-bg">BG</button>
+  <button id="m-spot">SPOT</button>
   <button id="m-cct">CCT</button>
+</div>
+
+<div id="gel">
+  <b style="color:#ff9a6a">GEL CALCULATOR</b> <span class="dim">— corrects the metered source to target · tap CCT card to close</span>
+  <div>Measured: <b id="gel-measured">—</b></div>
+  <div class="chips">Target:
+    <button data-t="3200">3200K</button>
+    <button data-t="4300" >4300K</button>
+    <button data-t="5600" class="sel">5600K</button>
+    <button data-t="6500">6500K</button>
+    <input id="gel-custom" type="number" min="1500" max="20000" step="50" placeholder="custom">
+  </div>
+  <div class="res" id="gel-result">—</div>
+  <div class="res" id="gel-tint">—</div>
+  <div class="dim">Mired-shift match against Lee CTO/CTB series. Aim at a white/grey card lit by the source for best accuracy.</div>
 </div>
 
 <div id="readout">
@@ -112,8 +144,9 @@ async function startCam(){
 }
 startCam();
 
-document.getElementById('flip').onclick = ()=>{ facing = facing==='environment'?'user':'environment'; pts={key:null,fill:null,bg:null,cct:null}; startCam(); };
-document.getElementById('reset').onclick = ()=>{ pts={key:null,fill:null,bg:null,cct:null}; faceBox=null; faceRatioEMA=null; bgY=null; bgRatioEMA=null; };
+let spots = [];        // [{x,y}] pinned spot-meter points (video px)
+document.getElementById('flip').onclick = ()=>{ facing = facing==='environment'?'user':'environment'; pts={key:null,fill:null,bg:null,cct:null}; spots=[]; startCam(); };
+document.getElementById('reset').onclick = ()=>{ pts={key:null,fill:null,bg:null,cct:null}; spots=[]; faceBox=null; faceRatioEMA=null; bgY=null; bgRatioEMA=null; };
 document.getElementById('lock').onclick = async ()=>{
   if(!track) return;
   const caps = track.getCapabilities ? track.getCapabilities() : {};
@@ -132,19 +165,21 @@ document.getElementById('lock').onclick = async ()=>{
   }catch(e){ alert('Could not lock exposure: '+e.message); }
 };
 
-const modeBtns = { face:document.getElementById('m-face'), key:document.getElementById('m-key'), fill:document.getElementById('m-fill'), bg:document.getElementById('m-bg'), cct:document.getElementById('m-cct') };
+const modeBtns = { face:document.getElementById('m-face'), key:document.getElementById('m-key'), fill:document.getElementById('m-fill'), bg:document.getElementById('m-bg'), spot:document.getElementById('m-spot'), cct:document.getElementById('m-cct') };
 function setMode(m){
   mode = m;
   modeBtns.face.className = m==='face' ? 'active-face' : '';
   modeBtns.key.className  = m==='key'  ? 'active-key'  : '';
   modeBtns.fill.className = m==='fill' ? 'active-fill' : '';
   modeBtns.bg.className   = m==='bg'   ? 'active-bg'   : '';
+  modeBtns.spot.className = m==='spot' ? 'active-spot' : '';
   modeBtns.cct.className  = m==='cct'  ? 'active-cct'  : '';
   document.getElementById('hint').textContent =
     m==='face'? 'Frame the face — face contrast + BG separation are measured automatically' :
     m==='key' ? 'Tap the BRIGHT (key) side of the face' :
     m==='fill'? 'Tap the SHADOW (fill) side of the face' :
     m==='bg'  ? 'Tap the BACKGROUND behind the subject' :
+    m==='spot'? 'Tap sources/areas to pin spots — each shows stops vs KEY (or first pin). Tap a pin to remove' :
                 'Tap a white/grey card or neutral surface for color temp';
   if(m==='face') initFaceDetector();
 }
@@ -152,6 +187,7 @@ modeBtns.face.onclick = ()=>setMode('face');
 modeBtns.key.onclick = ()=>setMode('key');
 modeBtns.fill.onclick = ()=>setMode('fill');
 modeBtns.bg.onclick = ()=>setMode('bg');
+modeBtns.spot.onclick = ()=>setMode('spot');
 modeBtns.cct.onclick = ()=>setMode('cct');
 
 // ---------- FACE auto mode: detect face, split at nose, key:fill from face halves ----------
@@ -259,6 +295,12 @@ overlay.addEventListener('pointerdown', ev=>{
   const vx = (ev.clientX - r.left + offX)/scale;
   const vy = (ev.clientY - r.top  + offY)/scale;
   if(!isFinite(vx)||!isFinite(vy)||vx<0||vy<0||vx>video.videoWidth||vy>video.videoHeight) return;
+  if(mode==='spot'){
+    const hit = spots.findIndex(s => Math.hypot(s.x-vx, s.y-vy) < PATCH*2.5);
+    if(hit>=0) spots.splice(hit,1);          // tap a pin to remove it
+    else { spots.push({x:vx, y:vy}); if(spots.length>8) spots.shift(); }
+    return;
+  }
   pts[mode] = { x:vx, y:vy };
   if(mode==='key') setMode('fill');           // auto-advance key → fill
 });
@@ -304,6 +346,90 @@ function frameLuma(){
   return sum/n;
 }
 
+// ---------- false color (signal-level IRE bands, ARRI-style) ----------
+let fcOn = false;
+const fcCanvas = document.createElement('canvas');
+const fcCtx = fcCanvas.getContext('2d', { willReadFrequently:true });
+const FC_LUT = new Uint8Array(256*3);
+for(let v=0; v<256; v++){
+  const pct = v/255*100;
+  let c;
+  if(pct<2.5)       c=[64,0,160];      // crushed black
+  else if(pct<4.5)  c=[0,32,255];      // deep shadow
+  else if(pct>=99)  c=[255,0,0];       // clip
+  else if(pct>=94)  c=[255,140,0];     // 99% warning
+  else if(pct>=76)  c=[230,230,0];     // high-lights
+  else if(pct>=57&&pct<63) c=[255,105,180]; // avg skin ≈ +1 stop over grey (sRGB-encoded)
+  else if(pct>=44&&pct<49) c=[0,204,0];     // 18% grey ≈ 46% sRGB signal
+  else { const g=Math.round(40+v*0.65); c=[g,g,g]; }  // desaturated ramp
+  FC_LUT[v*3]=c[0]; FC_LUT[v*3+1]=c[1]; FC_LUT[v*3+2]=c[2];
+}
+const fcBtn = document.getElementById('fc');
+fcBtn.onclick = ()=>{ fcOn=!fcOn; fcBtn.className = fcOn?'fc-on':''; document.getElementById('fc-legend').style.display = fcOn?'block':'none'; };
+
+function drawFalseColor(scale, offX, offY){
+  const fw = 320, fh = Math.max(2, Math.round(320*video.videoHeight/video.videoWidth));
+  if(fcCanvas.width!==fw||fcCanvas.height!==fh){ fcCanvas.width=fw; fcCanvas.height=fh; }
+  fcCtx.drawImage(video, 0, 0, fw, fh);
+  const id = fcCtx.getImageData(0, 0, fw, fh);
+  const d = id.data;
+  for(let i=0; i<d.length; i+=4){
+    const y = Math.min(255, Math.round(0.2126*d[i] + 0.7152*d[i+1] + 0.0722*d[i+2]));
+    d[i]=FC_LUT[y*3]; d[i+1]=FC_LUT[y*3+1]; d[i+2]=FC_LUT[y*3+2];
+  }
+  fcCtx.putImageData(id, 0, 0);
+  octx.imageSmoothingEnabled = false;
+  octx.drawImage(fcCanvas, -offX, -offY, video.videoWidth*scale, video.videoHeight*scale);
+  octx.imageSmoothingEnabled = true;
+}
+
+// ---------- gel calculator ----------
+let lastCCT = null, lastTint = null;   // updated each frame from the CCT sample
+let gelTarget = 5600;
+const gelPanel = document.getElementById('gel');
+document.getElementById('cct-card').style.cursor = 'pointer';
+document.getElementById('cct-card').onclick = ()=>{ gelPanel.style.display = gelPanel.style.display==='block' ? 'none' : 'block'; };
+for(const b of gelPanel.querySelectorAll('.chips button')){
+  b.onclick = ()=>{
+    gelTarget = +b.dataset.t;
+    document.getElementById('gel-custom').value = '';
+    for(const o of gelPanel.querySelectorAll('.chips button')) o.className = o===b ? 'sel' : '';
+  };
+}
+document.getElementById('gel-custom').oninput = e=>{
+  const v = +e.target.value;
+  if(v>=1500 && v<=20000){ gelTarget = v; for(const o of gelPanel.querySelectorAll('.chips button')) o.className=''; }
+};
+const GELS_WARM = [['⅛ CTO (Lee 223)',26],['¼ CTO (Lee 206)',64],['½ CTO (Lee 205)',109],['Full CTO (Lee 204)',159],['Full + ¼ CTO',223],['Double CTO',318]];
+const GELS_COOL = [['⅛ CTB (Lee 218)',-26],['¼ CTB (Lee 203)',-49],['½ CTB (Lee 202)',-78],['Full CTB (Lee 201)',-131],['Full + ½ CTB',-209],['Double CTB',-262]];
+function gelSuggest(measured, target){
+  const shift = 1e6/target - 1e6/measured;         // + = warm the source (CTO)
+  if(Math.abs(shift)<13) return { shift, text:'No gel needed — within ⅛-gel tolerance' };
+  const list = shift>0 ? GELS_WARM : GELS_COOL;
+  let best = list[0];
+  for(const g of list) if(Math.abs(g[1]-shift) < Math.abs(best[1]-shift)) best = g;
+  const lands = Math.round(1e6/(1e6/measured + best[1])/50)*50;
+  return { shift, text: best[0]+' → lands ≈'+lands+'K' };
+}
+function updateGelPanel(){
+  if(gelPanel.style.display!=='block') return;
+  document.getElementById('gel-measured').textContent = lastCCT ? Math.round(lastCCT/50)*50+'K' : '— (aim CCT at the source)';
+  if(!lastCCT){ document.getElementById('gel-result').textContent='—'; document.getElementById('gel-tint').textContent='—'; return; }
+  const g = gelSuggest(lastCCT, gelTarget);
+  document.getElementById('gel-result').textContent =
+    'Shift: '+(g.shift>0?'+':'')+Math.round(g.shift)+' mired → '+g.text;
+  const t = lastTint;
+  document.getElementById('gel-tint').textContent =
+    t===null ? '' :
+    t>0.02   ? 'Tint: strong green → ½ minusgreen' :
+    t>0.012  ? 'Tint: green → ¼ minusgreen' :
+    t>0.006  ? 'Tint: slight green → ⅛ minusgreen' :
+    t<-0.02  ? 'Tint: strong magenta → ½ plusgreen' :
+    t<-0.012 ? 'Tint: magenta → ¼ plusgreen' :
+    t<-0.006 ? 'Tint: slight magenta → ⅛ plusgreen' :
+               'Tint: neutral — no green/magenta correction';
+}
+
 // ---------- render loop ----------
 function loop(){
   requestAnimationFrame(loop);
@@ -320,6 +446,8 @@ function loop(){
   const offX = (video.videoWidth*scale - r.width)/2, offY = (video.videoHeight*scale - r.height)/2;
   const toScreen = p => ({ x:p.x*scale-offX, y:p.y*scale-offY });
 
+  if(fcOn) drawFalseColor(scale, offX, offY);
+
   const colors = { key:'#f5c518', fill:'#4aa3ff', bg:'#c78bff', cct:'#ff7a45' };
   let samples = {};
   for(const k of ['key','fill','bg','cct']){
@@ -330,6 +458,27 @@ function loop(){
     octx.strokeRect(s.x-PATCH, s.y-PATCH, PATCH*2, PATCH*2);
     octx.fillStyle = colors[k]; octx.font='bold 12px sans-serif';
     octx.fillText(k.toUpperCase(), s.x-PATCH, s.y-PATCH-5);
+  }
+
+  // Spot pins: live stop offsets vs KEY (or vs first pin)
+  if(spots.length){
+    const refY = samples.key ? samples.key.Y : (samplePatch(spots[0].x, spots[0].y)||{}).Y;
+    spots.forEach((sp, i)=>{
+      const smp = samplePatch(sp.x, sp.y);
+      const s = toScreen(sp);
+      octx.strokeStyle='#ff6ea9'; octx.lineWidth=2;
+      octx.beginPath(); octx.moveTo(s.x-9,s.y); octx.lineTo(s.x+9,s.y); octx.moveTo(s.x,s.y-9); octx.lineTo(s.x,s.y+9); octx.stroke();
+      octx.strokeRect(s.x-PATCH, s.y-PATCH, PATCH*2, PATCH*2);
+      let lbl = 'S'+(i+1);
+      if(smp && refY>0.0005){
+        if(!samples.key && i===0) lbl += ' REF';
+        else if(smp.Y>0.0005){ const d=Math.log2(smp.Y/refY); lbl += ' '+(d>=0?'+':'')+d.toFixed(1); }
+        else lbl += ' <-9';
+      }
+      octx.font='bold 12px sans-serif';
+      octx.fillStyle='#000'; octx.fillText(lbl, s.x-PATCH+1, s.y-PATCH-4);
+      octx.fillStyle='#ff6ea9'; octx.fillText(lbl, s.x-PATCH, s.y-PATCH-5);
+    });
   }
 
   // Contrast ratio
@@ -397,8 +546,10 @@ function loop(){
     if(c && c.cct>1500 && c.cct<20000){
       cctEl.textContent = Math.round(c.cct/50)*50+'K';
       tintEl.textContent = c.tint>0.006 ? 'tint: green' : c.tint<-0.006 ? 'tint: magenta' : 'tint: neutral';
-    } else { cctEl.textContent='—'; tintEl.textContent='out of range'; }
-  } else { cctEl.textContent='—'; tintEl.textContent='too dark'; }
+      lastCCT = c.cct; lastTint = c.tint;
+    } else { cctEl.textContent='—'; tintEl.textContent='out of range'; lastCCT=null; lastTint=null; }
+  } else { cctEl.textContent='—'; tintEl.textContent='too dark'; lastCCT=null; lastTint=null; }
+  updateGelPanel();
 
   // Relative EV
   const Y = frameLuma();

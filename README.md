@@ -5,6 +5,9 @@ Single-file web app for cinematographers:
 - **FACE auto** — detects the face (MediaPipe), splits at the nose, and reads the key:fill contrast ratio of the face automatically (median luminance per half, shown as ratio + stops + key side)
 - **Key : Background** — subject-to-background separation: how many stops the set behind the subject sits under the key side of the face (auto in FACE mode via median luminance of the scene outside the face/body region, or manual KEY→BG taps)
 - **KEY/FILL/BG taps** — manual point sampling
+- **SPOT map** — pin up to 8 points on sources/areas; each shows its live offset in stops from KEY (or from the first pin). Tap a pin to remove it
+- **False color (FC)** — live exposure bands over the image: clip / 99% / hi-light / skin (+1 stop) / 18% grey / shadow / crushed, at sRGB signal positions so it agrees with the EV card
+- **Gel calculator** — tap the Color Temp card: measured CCT → target (3200/4300/5600/6500/custom) → mired shift → nearest Lee CTO/CTB gel + resulting CCT, plus ±green correction from tint
 - **CCT spot** — color temperature (Kelvin, McCamy) + green/magenta tint hint (offset from the CIE daylight locus)
 - **Exposure** — relative EV vs 18% grey
 
