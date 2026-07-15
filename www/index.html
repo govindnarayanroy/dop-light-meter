@@ -3,47 +3,78 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
-<title>DoP Light Meter — Face Contrast · CCT · EV</title>
+<title>DoP Meter · Face Contrast · CCT · EV</title>
 <style>
+  :root {
+    --bg:#141410; --surface:#1a1a15; --line:#2b2b24;
+    --text:#eceade; --dim:#97948a; --faint:#6a675e;
+    --key:#f5c518; --fill:#4aa3ff; --bgc:#c78bff; --spot:#ff6ea9;
+    --cct:#ff9a6a; --face:#7ee87e; --evc:#8fd0ff; --alert:#e0403c;
+  }
+  @supports (color: oklch(0.5 0 0)) {
+    :root {
+      --bg:oklch(0.13 0.006 95); --surface:oklch(0.17 0.006 95); --line:oklch(0.26 0.006 95);
+      --text:oklch(0.92 0.008 95); --dim:oklch(0.64 0.008 95); --faint:oklch(0.47 0.006 95);
+    }
+  }
   * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
-  body { background:#0d0d0f; color:#eee; font-family:-apple-system,'SF Pro',Roboto,sans-serif; height:100dvh; display:flex; flex-direction:column; overflow:hidden; }
-  header { padding:calc(10px + env(safe-area-inset-top)) 14px 10px; display:flex; justify-content:space-between; align-items:center; background:#141416; border-bottom:1px solid #222; }
-  header h1 { font-size:15px; font-weight:600; letter-spacing:.5px; color:#f5c518; }
-  header .btns button { background:#26262a; border:1px solid #3a3a40; color:#ddd; border-radius:8px; padding:6px 10px; font-size:12px; margin-left:6px; }
-  header .btns button.fc-on { background:#e0403c; border-color:#e0403c; color:#fff; }
+  body { background:var(--bg); color:var(--text); font-family:-apple-system,'SF Pro',Roboto,sans-serif; height:100dvh; display:flex; flex-direction:column; overflow:hidden; }
+  button { font-family:inherit; transition:background-color .12s ease-out, color .12s ease-out; }
+  @media (prefers-reduced-motion: reduce) { button { transition:none; } }
+
+  header { padding:calc(4px + env(safe-area-inset-top)) 12px 4px; display:flex; justify-content:space-between; align-items:center; background:var(--surface); border-bottom:1px solid var(--line); }
+  header h1 { font-size:12px; font-weight:700; letter-spacing:2.5px; color:var(--key); }
+  header .btns { display:flex; }
+  header .btns button { background:none; border:none; border-left:1px solid var(--line); color:var(--dim); min-height:44px; padding:0 12px; font-size:12px; font-weight:600; }
+  header .btns button:first-child { border-left:none; }
+  header .btns button:active { color:var(--text); }
+  header .btns button.fc-on { color:#111; background:var(--alert); }
+
   #stage { position:relative; flex:1; background:#000; overflow:hidden; }
   video { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
   #overlay { position:absolute; inset:0; width:100%; height:100%; touch-action:none; }
-  #mode-bar { display:flex; gap:8px; padding:8px 14px; background:#141416; }
-  #mode-bar button { flex:1; padding:10px 0; border-radius:10px; border:1px solid #3a3a40; background:#1c1c20; color:#bbb; font-size:13px; font-weight:600; }
-  #mode-bar button.active-key { background:#f5c518; color:#111; border-color:#f5c518; }
-  #mode-bar button.active-fill { background:#4aa3ff; color:#111; border-color:#4aa3ff; }
-  #mode-bar button.active-cct { background:#ff7a45; color:#111; border-color:#ff7a45; }
-  #mode-bar button.active-face { background:#7ee87e; color:#111; border-color:#7ee87e; }
-  #mode-bar button.active-bg { background:#c78bff; color:#111; border-color:#c78bff; }
-  #mode-bar button.active-spot { background:#ff6ea9; color:#111; border-color:#ff6ea9; }
-  #fc-legend { display:none; position:absolute; top:8px; left:50%; transform:translateX(-50%); background:rgba(10,10,12,.75); border-radius:8px; padding:4px 10px; font-size:10px; letter-spacing:.3px; white-space:nowrap; }
+  #fc-legend { display:none; position:absolute; top:8px; left:50%; transform:translateX(-50%); background:rgba(16,16,12,.82); border:1px solid var(--line); border-radius:6px; padding:4px 10px; font-size:10px; letter-spacing:.3px; white-space:nowrap; color:var(--dim); }
   #fc-legend span { display:inline-block; margin:0 5px; }
   #fc-legend i { display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:3px; vertical-align:-1px; }
-  #gel { display:none; background:#141416; border-top:1px solid #222; padding:10px 14px; font-size:12.5px; line-height:1.55; }
-  #gel .chips { margin:6px 0; display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
-  #gel .chips button { background:#26262a; border:1px solid #3a3a40; color:#ddd; border-radius:8px; padding:5px 10px; font-size:12px; }
-  #gel .chips button.sel { background:#ff9a6a; color:#111; border-color:#ff9a6a; }
-  #gel .chips input { width:64px; background:#1c1c20; border:1px solid #3a3a40; color:#eee; border-radius:8px; padding:5px 6px; font-size:12px; }
-  #gel .res { color:#ffd9a8; }
-  #gel .dim { color:#888; font-size:11px; }
-  #readout { background:#141416; border-top:1px solid #222; padding:10px 14px calc(16px + env(safe-area-inset-bottom)); display:grid; grid-template-columns:1fr 1fr; gap:10px; }
-  .card { background:#1c1c20; border:1px solid #2c2c32; border-radius:12px; padding:10px; text-align:center; }
-  .card .label { font-size:10px; text-transform:uppercase; letter-spacing:1px; color:#888; margin-bottom:4px; }
-  .card .value { font-size:20px; font-weight:700; }
-  .card .sub { font-size:11px; color:#999; margin-top:2px; }
-  #ratio-card .value { color:#f5c518; }
-  #bg-card .value { color:#c78bff; }
-  #cct-card .value { color:#ff9a6a; }
-  #ev-card .value { color:#8fd0ff; }
-  #hint { position:absolute; bottom:10px; left:0; right:0; text-align:center; font-size:12px; color:#fff; text-shadow:0 1px 3px #000; pointer-events:none; }
-  #err { padding:20px; color:#ff8080; font-size:14px; display:none; }
-  .note { grid-column:1 / -1; font-size:10.5px; color:#777; line-height:1.5; }
+  #hint { position:absolute; bottom:10px; left:12px; right:12px; text-align:center; font-size:12px; color:#fff; text-shadow:0 1px 3px #000; pointer-events:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #err { padding:14px 16px; color:var(--alert); font-size:13px; line-height:1.5; display:none; background:var(--surface); border-top:1px solid var(--line); }
+
+  #mode-bar { display:flex; background:var(--surface); border-top:1px solid var(--line); }
+  #mode-bar button { flex:1; min-height:48px; border:none; border-left:1px solid var(--line); background:none; color:var(--dim); font-size:12px; font-weight:600; letter-spacing:.4px; }
+  #mode-bar button:first-child { border-left:none; }
+  #mode-bar button[class^="active-"] { color:#111; font-weight:700; }
+  #mode-bar button.active-key  { background:var(--key); }
+  #mode-bar button.active-fill { background:var(--fill); }
+  #mode-bar button.active-cct  { background:var(--cct); }
+  #mode-bar button.active-face { background:var(--face); }
+  #mode-bar button.active-bg   { background:var(--bgc); }
+  #mode-bar button.active-spot { background:var(--spot); }
+
+  #gel { display:none; background:var(--surface); border-top:1px solid var(--line); padding:10px 12px; font-size:12.5px; line-height:1.55; }
+  #gel .chips { margin:6px 0; display:flex; gap:8px; flex-wrap:wrap; align-items:center; color:var(--dim); }
+  #gel .chips button { background:var(--bg); border:1px solid var(--line); color:var(--dim); border-radius:6px; min-height:40px; padding:0 12px; font-size:12px; font-weight:600; }
+  #gel .chips button.sel { background:var(--cct); color:#111; border-color:var(--cct); }
+  #gel .chips input { width:72px; background:var(--bg); border:1px solid var(--line); color:var(--text); border-radius:6px; min-height:40px; padding:0 8px; font-size:13px; font-variant-numeric:tabular-nums; }
+  #gel .res { color:var(--text); font-variant-numeric:tabular-nums; }
+  #gel .dim { color:var(--faint); font-size:11px; }
+
+  #readout { background:var(--surface); border-top:1px solid var(--line); padding:0 0 env(safe-area-inset-bottom); display:grid; grid-template-columns:repeat(4, 1fr); }
+  .ch { padding:8px 10px 6px; border-left:1px solid var(--line); min-width:0; }
+  .ch:first-child { border-left:none; }
+  .ch .label { font-size:9.5px; text-transform:uppercase; letter-spacing:1.2px; color:var(--dim); margin-bottom:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .ch .value { font-size:23px; font-weight:700; font-variant-numeric:tabular-nums; letter-spacing:-.3px; line-height:1.15; white-space:nowrap; }
+  .ch .sub { font-size:10px; color:var(--dim); line-height:1.35; margin-top:2px; min-height:27px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  #ratio-card .value { color:var(--key); }
+  #bg-card .value { color:var(--bgc); }
+  #cct-card .value { color:var(--cct); }
+  #ev-card .value { color:var(--evc); }
+  .note { grid-column:1 / -1; font-size:10px; color:var(--faint); line-height:1.5; padding:6px 12px 8px; border-top:1px solid var(--line); }
+  .note b { color:var(--dim); font-weight:600; }
+  @media (max-width: 379px) {
+    #readout { grid-template-columns:1fr 1fr; }
+    .ch:nth-child(3) { border-left:none; }
+    .ch:nth-child(n+3) { border-top:1px solid var(--line); }
+  }
 </style>
 </head>
 <body>
@@ -68,7 +99,7 @@
 <div id="err"></div>
 
 <div id="mode-bar">
-  <button id="m-face">FACE auto</button>
+  <button id="m-face">FACE</button>
   <button id="m-key" class="active-key">KEY</button>
   <button id="m-fill">FILL</button>
   <button id="m-bg">BG</button>
@@ -77,7 +108,7 @@
 </div>
 
 <div id="gel">
-  <b style="color:#ff9a6a">GEL CALCULATOR</b> <span class="dim">— corrects the metered source to target · tap CCT card to close</span>
+  <b style="color:var(--cct); font-size:11px; letter-spacing:1.2px;">GEL CALCULATOR</b> <span class="dim">corrects the metered source to target · tap CCT readout to close</span>
   <div>Measured: <b id="gel-measured">—</b></div>
   <div class="chips">Target:
     <button data-t="3200">3200K</button>
@@ -92,28 +123,28 @@
 </div>
 
 <div id="readout">
-  <div class="card" id="ratio-card">
-    <div class="label">Contrast Ratio</div>
+  <div class="ch" id="ratio-card">
+    <div class="label">Contrast</div>
     <div class="value" id="ratio">—</div>
     <div class="sub" id="stops">key : fill</div>
   </div>
-  <div class="card" id="bg-card">
-    <div class="label">Key : Background</div>
+  <div class="ch" id="bg-card">
+    <div class="label">Key : BG</div>
     <div class="value" id="bgratio">—</div>
     <div class="sub" id="bgsub">face vs BG</div>
   </div>
-  <div class="card" id="cct-card">
-    <div class="label">Color Temp</div>
+  <div class="ch" id="cct-card">
+    <div class="label">CCT</div>
     <div class="value" id="cct">—</div>
-    <div class="sub" id="tint">Kelvin (approx)</div>
+    <div class="sub" id="tint">tap for gel calc</div>
   </div>
-  <div class="card" id="ev-card">
+  <div class="ch" id="ev-card">
     <div class="label">Exposure</div>
     <div class="value" id="ev">—</div>
     <div class="sub" id="lux">relative EV</div>
   </div>
   <div class="note" id="note">
-    Phone auto-exposure shifts readings. Tap <b>AE Lock</b> (if supported) or keep framing steady while sampling KEY, FILL and BG — <b>ratios</b> stay valid as long as all points are read in the same frame conditions. <b>Key : Background</b> reads how far the set behind the subject sits under the key (auto in FACE mode, or tap KEY then BG). CCT is an estimate from sensor RGB (aim CCT at a white/grey card for best accuracy).
+    Readings are estimates from the phone sensor; ratios stay valid while framing is steady. <b>AE Lock</b> holds exposure where supported. Tap the <b>CCT</b> readout for gel suggestions; aim at a white or grey card for best CCT accuracy.
   </div>
 </div>
 
@@ -160,7 +191,7 @@ document.getElementById('lock').onclick = async ()=>{
       document.getElementById('lock').textContent='AE Lock?';
       alert('Full manual exposure lock is not supported by this browser/camera. Keep framing steady while sampling.');
     } else {
-      alert('Exposure lock not supported here. Keep framing steady — ratios remain valid within a steady frame.');
+      alert('Exposure lock not supported here. Keep framing steady; ratios remain valid within a steady frame.');
     }
   }catch(e){ alert('Could not lock exposure: '+e.message); }
 };
@@ -175,11 +206,11 @@ function setMode(m){
   modeBtns.spot.className = m==='spot' ? 'active-spot' : '';
   modeBtns.cct.className  = m==='cct'  ? 'active-cct'  : '';
   document.getElementById('hint').textContent =
-    m==='face'? 'Frame the face — face contrast + BG separation are measured automatically' :
+    m==='face'? 'Frame the face: ratio and BG separation read automatically' :
     m==='key' ? 'Tap the BRIGHT (key) side of the face' :
     m==='fill'? 'Tap the SHADOW (fill) side of the face' :
     m==='bg'  ? 'Tap the BACKGROUND behind the subject' :
-    m==='spot'? 'Tap sources/areas to pin spots — each shows stops vs KEY (or first pin). Tap a pin to remove' :
+    m==='spot'? 'Tap sources to pin spots, each shows stops vs KEY (or first pin). Tap a pin to remove' :
                 'Tap a white/grey card or neutral surface for color temp';
   if(m==='face') initFaceDetector();
 }
@@ -404,7 +435,7 @@ const GELS_WARM = [['⅛ CTO (Lee 223)',26],['¼ CTO (Lee 206)',64],['½ CTO (Le
 const GELS_COOL = [['⅛ CTB (Lee 218)',-26],['¼ CTB (Lee 203)',-49],['½ CTB (Lee 202)',-78],['Full CTB (Lee 201)',-131],['Full + ½ CTB',-209],['Double CTB',-262]];
 function gelSuggest(measured, target){
   const shift = 1e6/target - 1e6/measured;         // + = warm the source (CTO)
-  if(Math.abs(shift)<13) return { shift, text:'No gel needed — within ⅛-gel tolerance' };
+  if(Math.abs(shift)<13) return { shift, text:'No gel needed: within ⅛-gel tolerance' };
   const list = shift>0 ? GELS_WARM : GELS_COOL;
   let best = list[0];
   for(const g of list) if(Math.abs(g[1]-shift) < Math.abs(best[1]-shift)) best = g;
@@ -413,7 +444,7 @@ function gelSuggest(measured, target){
 }
 function updateGelPanel(){
   if(gelPanel.style.display!=='block') return;
-  document.getElementById('gel-measured').textContent = lastCCT ? Math.round(lastCCT/50)*50+'K' : '— (aim CCT at the source)';
+  document.getElementById('gel-measured').textContent = lastCCT ? Math.round(lastCCT/50)*50+'K' : 'aim CCT at the source';
   if(!lastCCT){ document.getElementById('gel-result').textContent='—'; document.getElementById('gel-tint').textContent='—'; return; }
   const g = gelSuggest(lastCCT, gelTarget);
   document.getElementById('gel-result').textContent =
@@ -427,7 +458,7 @@ function updateGelPanel(){
     t<-0.02  ? 'Tint: strong magenta → ½ plusgreen' :
     t<-0.012 ? 'Tint: magenta → ¼ plusgreen' :
     t<-0.006 ? 'Tint: slight magenta → ⅛ plusgreen' :
-               'Tint: neutral — no green/magenta correction';
+               'Tint: neutral, no correction needed';
 }
 
 // ---------- render loop ----------
@@ -487,7 +518,7 @@ function loop(){
   let keyForBG = null;   // linear luminance of the key side, set per mode below
   if(mode==='face'){
     if(faceLoadFailed){
-      ratioEl.textContent='—'; stopsEl.textContent='face detect unavailable (offline?) — use KEY/FILL taps';
+      ratioEl.textContent='—'; stopsEl.textContent='face detect unavailable, use KEY/FILL taps';
     } else if(faceBox){
       // draw face box + nose split line
       const tl = toScreen({x:faceBox.x, y:faceBox.y});
@@ -565,11 +596,11 @@ function ratioLabel(x){
   return 'high contrast (16:1+)';
 }
 function sepLabel(st){
-  if(st<-0.5) return 'BG hotter — silhouette/high-key';
-  if(st<0.5)  return 'BG ≈ key — flat depth';
-  if(st<1.5)  return 'subtle sep (~1 stop down)';
-  if(st<2.5)  return 'classic sep (~2 stops down)';
-  if(st<4)    return 'moody (2½–4 stops down)';
+  if(st<-0.5) return 'BG hotter: silhouette risk';
+  if(st<0.5)  return 'flat depth';
+  if(st<1.5)  return 'subtle sep';
+  if(st<2.5)  return 'classic sep';
+  if(st<4)    return 'moody';
   return 'night / void BG';
 }
 loop();
