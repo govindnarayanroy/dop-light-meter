@@ -2,8 +2,9 @@
 
 Single-file web app for cinematographers:
 
-- **FACE auto** — detects the face (MediaPipe), splits at the nose, and reads the key:fill contrast ratio of the face automatically (median luminance per half, shown as ratio + stops + key side)
-- **Key : Background** — subject-to-background separation: how many stops the set behind the subject sits under the key side of the face (auto in FACE mode via median luminance of the scene outside the face/body region, or manual KEY→BG taps)
+- **FACE auto** — MediaPipe Face Landmarker (478 landmarks): skin luminance is sampled at cheek/forehead/chin/nose landmarks only (eyes, brows, lips and the face-oval edge excluded), split along the true forehead-to-chin midline, so hair, background and head tilt can't skew the key:fill ratio
+- **Key-light direction** — Lambertian fit of skin luminance against ellipsoid surface normals from the landmark cloud; reports the key's horizontal/vertical angle (e.g. "KEY 35°L · 20°↑") with an on-screen arrow when the fit is confident
+- **Key : Background** — subject-to-background separation: how many stops the set behind the subject sits under the key side of the face (auto in FACE mode via MediaPipe person segmentation: background = every pixel not in the subject mask; or manual KEY→BG taps)
 - **KEY/FILL/BG taps** — manual point sampling
 - **SPOT map** — pin up to 8 points on sources/areas; each shows its live offset in stops from KEY (or from the first pin). Tap a pin to remove it
 - **False color (FC)** — live exposure bands over the image: clip / 99% / hi-light / skin (+1 stop) / 18% grey / shadow / crushed, at sRGB signal positions so it agrees with the EV card
@@ -11,7 +12,7 @@ Single-file web app for cinematographers:
 - **CCT spot** — color temperature (Kelvin, McCamy) + green/magenta tint hint (offset from the CIE daylight locus)
 - **Exposure** — relative EV vs 18% grey
 
-No build step — static `index.html`. Requires HTTPS (or localhost) for camera access; FACE auto loads its model from jsdelivr CDN on first use.
+No build step — static `index.html`. Requires HTTPS (or localhost) for camera access; All models (face landmarker, selfie segmenter, WASM runtime) are bundled in `www/mediapipe-tasks/` so the app runs fully offline.
 
 Verified against known cinematography references (fake-camera stills piped into the live app):
 

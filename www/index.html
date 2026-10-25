@@ -177,7 +177,7 @@ startCam();
 
 let spots = [];        // [{x,y}] pinned spot-meter points (video px)
 document.getElementById('flip').onclick = ()=>{ facing = facing==='environment'?'user':'environment'; pts={key:null,fill:null,bg:null,cct:null}; spots=[]; startCam(); };
-document.getElementById('reset').onclick = ()=>{ pts={key:null,fill:null,bg:null,cct:null}; spots=[]; faceBox=null; faceRatioEMA=null; bgY=null; bgRatioEMA=null; };
+document.getElementById('reset').onclick = ()=>{ pts={key:null,fill:null,bg:null,cct:null}; spots=[]; face=null; faceRatioEMA=null; bgY=null; bgRatioEMA=null; lightDir=null; };
 document.getElementById('lock').onclick = async ()=>{
   if(!track) return;
   const caps = track.getCapabilities ? track.getCapabilities() : {};
@@ -221,64 +221,120 @@ modeBtns.bg.onclick = ()=>setMode('bg');
 modeBtns.spot.onclick = ()=>setMode('spot');
 modeBtns.cct.onclick = ()=>setMode('cct');
 
-// ---------- FACE auto mode: detect face, split at nose, key:fill from face halves ----------
-let faceDet = null, faceReady = false, faceBusy = false, faceLoadFailed = false;
-let faceBox = null;   // {x,y,w,h,noseX} in video px
+// ---------- FACE auto: Face Landmarker (478 pts) + person segmentation ----------
+// Skin is sampled at landmark positions (cheeks, forehead, chin, nose), never from a
+// bounding box, so hair and background can't contaminate the halves; the split follows
+// the true forehead-to-chin midline so tilted heads measure correctly.
+let lmk = null, segm = null, faceReady = false, faceBusy = false, faceLoadFailed = false;
+let face = null;       // { pts, ex:{x0,y0,x1,y1}, mid:{a,b}, skin:[idx], ctr:{x,y,z}, ax:{a,b,c} }
 let faceRatioEMA = null;
-let bgY = null;       // median linear luminance of scene behind/around subject (face mode)
+let bgY = null;        // median linear luminance of the true background (segmentation mask)
 let bgRatioEMA = null;
-const detCanvas = document.createElement('canvas');
-const dctx = detCanvas.getContext('2d', { willReadFrequently:true });
+let lightDir = null;   // smoothed key-light direction estimate { h, v, r2 }
+const FACE_OVAL = new Set([10,338,297,332,284,251,389,356,454,323,361,288,397,365,379,378,400,377,152,148,176,149,150,136,172,58,132,93,234,127,162,21,54,103,67,109]);
+const segCanvas = document.createElement('canvas');
+const segCtx = segCanvas.getContext('2d', { willReadFrequently:true });
 
-function initFaceDetector(){
-  if(faceDet || faceLoadFailed) return;
-  const s = document.createElement('script');
-  s.src = 'mediapipe/face_detection.js';
-  s.onload = async ()=>{
-    try{
-      faceDet = new FaceDetection({ locateFile: f => 'mediapipe/'+f });
-      faceDet.setOptions({ model:'short', minDetectionConfidence:0.5 });
-      faceDet.onResults(r=>{
-        faceBusy = false;
-        if(r.detections && r.detections.length){
-          const d = r.detections[0];
-          const bb = d.boundingBox;
-          const kp = d.landmarks || [];               // 0:R eye 1:L eye 2:nose 3:mouth 4:R ear 5:L ear
-          const W = grab.width, H = grab.height;
-          faceBox = {
-            x:(bb.xCenter - bb.width/2)*W, y:(bb.yCenter - bb.height/2)*H,
-            w:bb.width*W, h:bb.height*H,
-            noseX: kp[2] ? kp[2].x*W : bb.xCenter*W
-          };
-        } else faceBox = null;
-      });
-      await faceDet.initialize();
-      faceReady = true;
-    }catch(e){ faceLoadFailed = true; console.warn('Face detector init failed', e); }
-  };
-  s.onerror = ()=>{ faceLoadFailed = true; };
-  document.head.appendChild(s);
+async function initFaceDetector(){
+  if(lmk || faceLoadFailed) return;
+  try{
+    const mp = await import('./mediapipe-tasks/vision_bundle.js');
+    const files = await mp.FilesetResolver.forVisionTasks('mediapipe-tasks/wasm');
+    const mkLm = d => mp.FaceLandmarker.createFromOptions(files, {
+      baseOptions:{ modelAssetPath:'mediapipe-tasks/face_landmarker.task', delegate:d },
+      runningMode:'VIDEO', numFaces:1, outputFaceBlendshapes:false, outputFacialTransformationMatrixes:false });
+    lmk = await mkLm('GPU').catch(()=>mkLm('CPU'));
+    const mkSeg = d => mp.ImageSegmenter.createFromOptions(files, {
+      baseOptions:{ modelAssetPath:'mediapipe-tasks/selfie_segmenter.tflite', delegate:d },
+      runningMode:'VIDEO', outputCategoryMask:true, outputConfidenceMasks:false });
+    segm = await mkSeg('GPU').catch(()=>mkSeg('CPU')).catch(()=>null);
+    faceReady = true;
+  }catch(e){ faceLoadFailed = true; console.warn('Vision init failed', e); }
 }
 
-async function detectFace(){
+let visTs = 0;
+function detectFace(){
   if(!faceReady || faceBusy || !video.videoWidth) return;
   faceBusy = true;
-  const dw = 480, dh = Math.round(480*video.videoHeight/video.videoWidth);
-  if(detCanvas.width!==dw){ detCanvas.width=dw; detCanvas.height=dh; }
-  dctx.drawImage(video,0,0,dw,dh);
-  try{ await faceDet.send({ image: detCanvas }); }catch(e){ faceBusy=false; }
+  try{
+    visTs = Math.max(visTs+1, performance.now());
+    const W = video.videoWidth, H = video.videoHeight;
+    const res = lmk.detectForVideo(video, visTs);
+    face = (res.faceLandmarks && res.faceLandmarks.length)
+      ? buildFace(res.faceLandmarks[0].map(p=>({ x:p.x*W, y:p.y*H, z:p.z*W })))
+      : null;
+    if(segm && face){
+      const sw = 192, sh = Math.max(2, Math.round(192*H/W));
+      if(segCanvas.width!==sw||segCanvas.height!==sh){ segCanvas.width=sw; segCanvas.height=sh; }
+      segCtx.drawImage(video, 0, 0, sw, sh);
+      const sres = segm.segmentForVideo(segCanvas, visTs);
+      bgY = bgFromMask(sres.categoryMask, sw, sh, face.ctr.x*sw/W, face.ctr.y*sh/H);
+      sres.close();
+    } else if(face){
+      bgY = bgMedianLuma({ x:face.ex.x0, y:face.ex.y0, w:face.ex.x1-face.ex.x0, h:face.ex.y1-face.ex.y0 });
+    } else bgY = null;
+  }catch(e){ console.warn('detect', e); }
+  faceBusy = false;
 }
-setInterval(()=>{ if(mode==='face'){ detectFace(); bgY = faceBox ? bgMedianLuma(faceBox) : null; } }, 300);
+setInterval(()=>{ if(mode==='face') detectFace(); }, 300);
 
-// Median linear luminance of the scene excluding the subject:
-// skips an expanded face box plus a body column below it, so walls/set behind the
-// subject dominate the sample.
+const mid = (p,q)=>({ x:(p.x+q.x)/2, y:(p.y+q.y)/2, z:((p.z||0)+(q.z||0))/2 });
+function buildFace(pts){
+  const n = pts.length;
+  let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
+  for(const p of pts){ if(p.x<x0)x0=p.x; if(p.y<y0)y0=p.y; if(p.x>x1)x1=p.x; if(p.y>y1)y1=p.y; }
+  const eA = n>=478 ? pts[468] : mid(pts[33],pts[133]);
+  const eB = n>=478 ? pts[473] : mid(pts[362],pts[263]);
+  const ipd = Math.hypot(eA.x-eB.x, eA.y-eB.y) || 1;
+  const mouth = mid(pts[13], pts[14]);
+  const skin = [];
+  for(let i=0;i<468;i++){
+    if(FACE_OVAL.has(i)) continue;                      // jaw/hairline edge: hair + background risk
+    const p = pts[i];
+    let bad = false;
+    for(const e of [eA,eB]){
+      const dx=p.x-e.x, dy=p.y-e.y;
+      if(Math.hypot(dx,dy) < 0.34*ipd){ bad=true; break; }                         // eye
+      if(Math.abs(dx) < 0.55*ipd && dy < 0 && dy > -0.62*ipd){ bad=true; break; }  // brow band
+    }
+    if(bad) continue;
+    if(Math.abs(p.x-mouth.x) < 0.62*ipd && Math.abs(p.y-mouth.y) < 0.32*ipd) continue;  // lips
+    skin.push(i);
+  }
+  let cx=0,cy=0,cz=0; for(const i of skin){ cx+=pts[i].x; cy+=pts[i].y; cz+=pts[i].z; }
+  const k = skin.length||1; cx/=k; cy/=k; cz/=k;
+  let ax=0,ay=0,az=0;
+  for(const i of skin){ ax=Math.max(ax,Math.abs(pts[i].x-cx)); ay=Math.max(ay,Math.abs(pts[i].y-cy)); az=Math.max(az,Math.abs(pts[i].z-cz)); }
+  az = Math.max(az, ax*0.6);
+  return { pts, ex:{x0,y0,x1,y1}, mid:{ a:pts[10], b:pts[152] }, skin, ctr:{x:cx,y:cy,z:cz}, ax:{ a:ax||1, b:ay||1, c:az||1 } };
+}
+
+// Background = every pixel the segmenter does not assign to the subject's class.
+// The class carrying the face pixel is taken as "person", so the mask polarity never matters.
+function bgFromMask(mask, sw, sh, fx, fy){
+  if(!mask) return null;
+  const m = mask.getAsUint8Array();
+  const d = segCtx.getImageData(0,0,sw,sh).data;
+  const fi = Math.min(m.length-1, Math.max(0, Math.round(fy)*sw + Math.round(fx)));
+  const personVal = m[fi];
+  const vals = [];
+  for(let i=0;i<m.length;i++){
+    if(m[i]===personVal) continue;
+    const j=i*4;
+    vals.push(0.2126*srgb2lin(d[j]) + 0.7152*srgb2lin(d[j+1]) + 0.0722*srgb2lin(d[j+2]));
+  }
+  if(vals.length < m.length*0.03) return null;        // subject fills the frame
+  vals.sort((a,b)=>a-b);
+  return vals[vals.length>>1];
+}
+
+// Fallback when the segmenter is unavailable: skip an expanded face box + body column.
 function bgMedianLuma(fb){
   const W = grab.width, H = grab.height;
   if(!W) return null;
   const fx0 = fb.x - fb.w*0.30, fx1 = fb.x + fb.w*1.30;
-  const fy0 = fb.y - fb.h*0.60, fy1 = fb.y + fb.h*1.15;     // face + hair
-  const bx0 = fb.x - fb.w*0.60, bx1 = fb.x + fb.w*1.60;     // shoulders/body
+  const fy0 = fb.y - fb.h*0.60, fy1 = fb.y + fb.h*1.15;
+  const bx0 = fb.x - fb.w*0.60, bx1 = fb.x + fb.w*1.60;
   const by  = fb.y + fb.h*0.85;
   const d = gctx.getImageData(0,0,W,H).data;
   const step = Math.max(2, Math.round(W/160));
@@ -294,26 +350,72 @@ function bgMedianLuma(fb){
   return vals[vals.length>>1];
 }
 
-// Median linear luminance of each half of the face (split at nose), skin region only
-function faceHalvesRatio(fb){
-  const x0=Math.max(0, fb.x+fb.w*0.10), x1=Math.min(grab.width,  fb.x+fb.w*0.90);
-  const y0=Math.max(0, fb.y+fb.h*0.22), y1=Math.min(grab.height, fb.y+fb.h*0.88);
-  const w=Math.round(x1-x0), h=Math.round(y1-y0);
+// Median linear luminance of skin landmarks on each side of the forehead-chin midline
+function faceSkinRatio(f){
+  const x0=Math.max(0,Math.floor(f.ex.x0)-2), y0=Math.max(0,Math.floor(f.ex.y0)-2);
+  const w=Math.min(grab.width, Math.ceil(f.ex.x1)+2)-x0, h=Math.min(grab.height, Math.ceil(f.ex.y1)+2)-y0;
   if(w<8||h<8) return null;
-  const img = gctx.getImageData(Math.round(x0), Math.round(y0), w, h).data;
-  const L=[], R=[];
-  const split = fb.noseX - x0;
-  for(let py=0; py<h; py+=2) for(let px=0; px<w; px+=2){
-    const i=(py*w+px)*4;
-    const Y = 0.2126*srgb2lin(img[i]) + 0.7152*srgb2lin(img[i+1]) + 0.0722*srgb2lin(img[i+2]);
-    (px<split ? L : R).push(Y);
+  const img = gctx.getImageData(x0,y0,w,h).data;
+  const ax=f.mid.b.x-f.mid.a.x, ay=f.mid.b.y-f.mid.a.y;
+  const L=[], R=[], S=[];
+  for(const i of f.skin){
+    const p=f.pts[i];
+    const px=Math.round(p.x)-x0, py=Math.round(p.y)-y0;
+    if(px<1||py<1||px>=w-1||py>=h-1) continue;
+    let Y=0;
+    for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++){
+      const j=((py+dy)*w+(px+dx))*4;
+      Y += 0.2126*srgb2lin(img[j]) + 0.7152*srgb2lin(img[j+1]) + 0.0722*srgb2lin(img[j+2]);
+    }
+    Y/=9;
+    const side=(p.x-f.mid.a.x)*ay-(p.y-f.mid.a.y)*ax;   // sign = which side of the midline
+    (side<0?L:R).push(Y);
+    S.push({ p, Y });
   }
-  if(L.length<20 || R.length<20) return null;
-  const med = a => { a.sort((p,q)=>p-q); return a[a.length>>1]; };
+  if(L.length<12||R.length<12) return null;
+  const med=a=>{ a.sort((u,v)=>u-v); return a[a.length>>1]; };
   const lY=med(L), rY=med(R);
   if(Math.min(lY,rY)<=0.0005) return null;
-  const key = Math.max(lY,rY), fill = Math.min(lY,rY);
-  return { ratio:key/fill, keySide: lY>=rY?'left':'right', lY, rY };
+  return { ratio:Math.max(lY,rY)/Math.min(lY,rY), keySide: lY>=rY?'left':'right', lY, rY, S };
+}
+
+// Key-light direction: Lambertian fit Y ≈ k0 + k·n over skin landmarks, with normals
+// taken from an ellipsoid through the landmark cloud. k points toward the key.
+function fitLight(f, S){
+  if(S.length<30) return null;
+  const nrm = p => {
+    let nx=(p.x-f.ctr.x)/(f.ax.a*f.ax.a), ny=(p.y-f.ctr.y)/(f.ax.b*f.ax.b), nz=(p.z-f.ctr.z)/(f.ax.c*f.ax.c);
+    const l=Math.hypot(nx,ny,nz)||1; return [nx/l, ny/l, nz/l];
+  };
+  const A=[[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]], B=[0,0,0,0];
+  let sumY=0;
+  for(const {p,Y} of S){
+    const [nx,ny,nz]=nrm(p); const v=[1,nx,ny,nz];
+    for(let i=0;i<4;i++){ B[i]+=v[i]*Y; for(let j=0;j<4;j++) A[i][j]+=v[i]*v[j]; }
+    sumY+=Y;
+  }
+  const k = solve4(A,B); if(!k) return null;
+  const meanY=sumY/S.length; let ssT=0, ssR=0;
+  for(const {p,Y} of S){
+    const [nx,ny,nz]=nrm(p);
+    const pred=k[0]+k[1]*nx+k[2]*ny+k[3]*nz;
+    ssT+=(Y-meanY)**2; ssR+=(Y-pred)**2;
+  }
+  const r2 = ssT>0 ? 1-ssR/ssT : 0;
+  const ln=Math.hypot(k[1],k[2],k[3])||1;
+  const lx=k[1]/ln, ly=k[2]/ln;
+  const cl = x => Math.max(-1, Math.min(1, x));
+  return { r2, h: Math.asin(cl(lx))*180/Math.PI, v: Math.asin(cl(-ly))*180/Math.PI };
+}
+function solve4(A,B){
+  const M=A.map((r,i)=>[...r,B[i]]);
+  for(let c=0;c<4;c++){
+    let p=c; for(let r=c+1;r<4;r++) if(Math.abs(M[r][c])>Math.abs(M[p][c])) p=r;
+    if(Math.abs(M[p][c])<1e-12) return null;
+    [M[c],M[p]]=[M[p],M[c]];
+    for(let r=0;r<4;r++){ if(r===c) continue; const f=M[r][c]/M[c][c]; for(let j=c;j<5;j++) M[r][j]-=f*M[c][j]; }
+  }
+  return M.map((r,i)=>r[4]/r[i]);
 }
 
 // Map a tap on the overlay to video pixel coords (object-fit: cover math)
@@ -519,29 +621,39 @@ function loop(){
   if(mode==='face'){
     if(faceLoadFailed){
       ratioEl.textContent='—'; stopsEl.textContent='face detect unavailable, use KEY/FILL taps';
-    } else if(faceBox){
-      // draw face box + nose split line
-      const tl = toScreen({x:faceBox.x, y:faceBox.y});
-      octx.strokeStyle='#7ee87e'; octx.lineWidth=2;
-      octx.strokeRect(tl.x, tl.y, faceBox.w*scale, faceBox.h*scale);
-      const ns = toScreen({x:faceBox.noseX, y:faceBox.y});
-      octx.setLineDash([6,4]);
-      octx.beginPath(); octx.moveTo(ns.x, ns.y); octx.lineTo(ns.x, ns.y+faceBox.h*scale); octx.stroke();
+    } else if(face){
+      const tl = toScreen({x:face.ex.x0, y:face.ex.y0}), br = toScreen({x:face.ex.x1, y:face.ex.y1});
+      octx.strokeStyle='#7ee87e'; octx.lineWidth=1.5;
+      octx.strokeRect(tl.x, tl.y, br.x-tl.x, br.y-tl.y);
+      const ma = toScreen(face.mid.a), mb = toScreen(face.mid.b);
+      octx.setLineDash([6,4]); octx.lineWidth=2;
+      octx.beginPath(); octx.moveTo(ma.x, ma.y); octx.lineTo(mb.x, mb.y); octx.stroke();
       octx.setLineDash([]);
-      const fr = faceHalvesRatio(faceBox);
+      const fr = faceSkinRatio(face);
       if(fr){
         faceRatioEMA = faceRatioEMA===null ? fr.ratio : faceRatioEMA*0.8 + fr.ratio*0.2;
         const stops = Math.log2(faceRatioEMA);
         ratioEl.textContent = faceRatioEMA.toFixed(1)+':1';
         stopsEl.textContent = stops.toFixed(1)+' stops · key '+fr.keySide+' · '+ratioLabel(faceRatioEMA);
         octx.fillStyle='#7ee87e'; octx.font='bold 12px sans-serif';
-        octx.fillText('KEY', fr.keySide==='left' ? tl.x+4 : tl.x+faceBox.w*scale-34, tl.y-6);
+        octx.fillText('KEY', fr.keySide==='left' ? tl.x+4 : br.x-34, tl.y-6);
         keyForBG = Math.max(fr.lY, fr.rY);
-      } else { ratioEl.textContent='—'; stopsEl.textContent='face too small/dark'; }
+        const ld = fitLight(face, fr.S);
+        if(ld && ld.r2>=0.35){
+          lightDir = lightDir ? { h:lightDir.h*0.85+ld.h*0.15, v:lightDir.v*0.85+ld.v*0.15, r2:ld.r2 } : { h:ld.h, v:ld.v, r2:ld.r2 };
+          const lbl = 'KEY '+Math.round(Math.abs(lightDir.h))+'°'+(lightDir.h>=0?'R':'L')+' · '+Math.round(Math.abs(lightDir.v))+'°'+(lightDir.v>=0?'↑':'↓');
+          octx.font='bold 11px sans-serif';
+          octx.fillStyle='#000'; octx.fillText(lbl, tl.x+1, br.y+15);
+          octx.fillStyle='#7ee87e'; octx.fillText(lbl, tl.x, br.y+14);
+          const c = toScreen(face.ctr), len = Math.min(40, (br.x-tl.x)*0.35);
+          octx.beginPath(); octx.moveTo(c.x, c.y);
+          octx.lineTo(c.x+Math.sin(lightDir.h*Math.PI/180)*len, c.y-Math.sin(lightDir.v*Math.PI/180)*len); octx.stroke();
+        } else lightDir = null;
+      } else { ratioEl.textContent='—'; stopsEl.textContent='face too small/dark'; lightDir=null; }
     } else {
       ratioEl.textContent='—';
       stopsEl.textContent = faceReady ? 'no face detected' : 'loading face model…';
-      faceRatioEMA=null;
+      faceRatioEMA=null; lightDir=null;
     }
   } else if(samples.key && samples.fill && samples.fill.Y>0){
     let k=samples.key.Y, f=samples.fill.Y;
@@ -569,7 +681,7 @@ function loop(){
 
   // CCT — cct spot if set, else face skin (face mode), else key patch, else frame center
   let cctSample = samples.cct
-    || (mode==='face' && faceBox ? samplePatch(faceBox.x+faceBox.w/2, faceBox.y+faceBox.h*0.6) : null)
+    || (mode==='face' && face ? samplePatch(face.ctr.x, face.ctr.y) : null)
     || samples.key || samplePatch(video.videoWidth/2, video.videoHeight/2);
   const cctEl=document.getElementById('cct'), tintEl=document.getElementById('tint');
   if(cctSample && cctSample.Y>0.01){

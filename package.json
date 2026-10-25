@@ -21,6 +21,6 @@
     "@capacitor/cli": "^8.4.1",
     "@capacitor/core": "^8.4.1",
     "@capacitor/ios": "^8.4.1",
-    "@mediapipe/face_detection": "^0.4.1646425229"
+    "@mediapipe/tasks-vision": "^1.1.1"
   }
 }
