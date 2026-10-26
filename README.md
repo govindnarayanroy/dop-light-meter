@@ -8,7 +8,7 @@ Single-file web app for cinematographers:
 - **KEY/FILL/BG taps** — manual point sampling
 - **SPOT map** — pin up to 8 points on sources/areas; each shows its live offset in stops from KEY (or from the first pin). Tap a pin to remove it
 - **False color (FC)** — live exposure bands over the image: clip / 99% / hi-light / skin (+1 stop) / 18% grey / shadow / crushed, at sRGB signal positions so it agrees with the EV card
-- **Histogram (in FC mode)** — luma histogram colored by the same FC bands with a RANGE readout (2nd–98th percentile span in stops) and crushed/clipped percentages; tap the panel for RGB mode: additive per-channel histograms, mean channel balance vs green in stops (white-balance / grade cue) and per-channel clip percentages
+- **Histogram (in FC mode)** — DaVinci Resolve-style YRGB/RGB parade histogram: stacked per-channel lanes on the scopes' 10-bit full-range 0–1023 scale (Percentage as the alternate scale style), graticule every 128 code values, legal-video reference markers at 64/940, Y lane colored by the FC bands. Readouts: Y 2nd–98th percentile in code values, % below 64 / above 940, and in RGB mode the mean channel balance vs green in stops. Tap the panel to cycle YRGB/RGB and 10-bit/%
 - **Gel calculator** — tap the Color Temp card: measured CCT → target (3200/4300/5600/6500/custom) → mired shift → nearest Lee CTO/CTB gel + resulting CCT, plus ±green correction from tint
 - **CCT spot** — color temperature (Kelvin, McCamy) + green/magenta tint hint (offset from the CIE daylight locus)
 - **Exposure** — relative EV vs 18% grey

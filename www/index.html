@@ -425,7 +425,7 @@ overlay.addEventListener('pointerdown', ev=>{
   if(fcOn){
     const ox = ev.clientX - r.left, oy = ev.clientY - r.top;
     if(ox>=HIST.px && ox<=HIST.px+HIST.pw && oy>=HIST.py && oy<=HIST.py+HIST.ph){
-      histMode = histMode==='luma' ? 'rgb' : 'luma'; return;
+      histCycle(); return;
     }
   }
   if(mode==='face') return;
@@ -529,83 +529,90 @@ function drawFalseColor(scale, offX, offY){
 // Luma histogram for FC mode: bars take the false-color band of their bin, log-scaled so
 // shadow detail stays visible; the range line is the 2nd-to-98th percentile span in stops.
 const fcHist = new Uint32Array(256), rHist = new Uint32Array(256), gHist = new Uint32Array(256), bHist = new Uint32Array(256);
-let histMode = 'luma';          // 'luma' | 'rgb'  (tap the panel to toggle)
-const HIST = { px:12, ph:66, pw:0, py:0 };   // panel rect in overlay px, kept for hit-testing
+// DaVinci Resolve-style histogram: stacked YRGB (or RGB) parade lanes on the scopes'
+// 10-bit full-range scale 0–1023 (Data Levels), Percentage as the alternate scale style,
+// legal-video reference markers at 64 / 940. Tap the panel to cycle mode and scale.
+let histMode = 'yrgb', histScale = '10bit';
+const HIST = { px:12, ph:0, pw:0, py:0 };
+const to10 = v => Math.round(v*1023/255);
+const scaleLabel = code => histScale==='10bit' ? String(code) : (code/1023*100).toFixed(code===0||code===1023?0:1)+'%';
+function histCycle(){
+  if(histMode==='yrgb' && histScale==='10bit') histScale='pct';
+  else if(histMode==='yrgb'){ histMode='rgb'; histScale='10bit'; }
+  else if(histScale==='10bit') histScale='pct';
+  else { histMode='yrgb'; histScale='10bit'; }
+}
 function drawHistogram(){
   const W = overlay.width, H = overlay.height;
-  const pw = W-24, ph = HIST.ph, px = HIST.px, py = H-36-ph;
-  HIST.pw = pw; HIST.py = py;
+  const lanes = histMode==='yrgb'
+    ? [['Y',fcHist,null],['R',rHist,'rgba(235,70,60,.9)'],['G',gHist,'rgba(70,200,90,.9)'],['B',bHist,'rgba(80,120,255,.9)']]
+    : [['R',rHist,'rgba(235,70,60,.9)'],['G',gHist,'rgba(70,200,90,.9)'],['B',bHist,'rgba(80,120,255,.9)']];
+  const laneH = 22, head = 15, axis = 15;
+  const ph = head + lanes.length*laneH + axis, pw = W-24, px = 12, py = H-36-ph;
+  HIST.ph = ph; HIST.pw = pw; HIST.py = py;
   if(pw < 120 || py < 0) return;
-  octx.fillStyle = 'rgba(16,16,12,.78)'; octx.fillRect(px, py, pw, ph);
+  octx.fillStyle = 'rgba(16,16,12,.80)'; octx.fillRect(px, py, pw, ph);
   octx.strokeStyle = 'rgba(255,255,255,.14)'; octx.lineWidth = 1; octx.strokeRect(px+.5, py+.5, pw-1, ph-1);
-  let max = 1, total = 0;
-  for(let i=0;i<256;i++){ total += fcHist[i]; if(fcHist[i]>max) max = fcHist[i]; }
+  let total = 0; for(let i=0;i<256;i++) total += fcHist[i];
   if(!total) return;
-  const bw = pw/256, base = py+ph-15, top = ph-30;
-  octx.font = '9px sans-serif'; octx.textAlign = 'right'; octx.fillStyle = 'rgba(255,255,255,.45)';
-  octx.fillText(histMode==='luma' ? 'LUMA · tap for RGB' : 'RGB · tap for LUMA', px+pw-6, py+12);
-  octx.textAlign = 'left';
-  if(histMode==='rgb'){ drawRGBHistogram(px, py, pw, bw, base, top, total); return; }
-  const lmax = Math.log(1+max);
-  for(let i=0;i<256;i++){
-    if(!fcHist[i]) continue;
-    const h = top*Math.log(1+fcHist[i])/lmax;
-    octx.fillStyle = 'rgb('+FC_LUT[i*3]+','+FC_LUT[i*3+1]+','+FC_LUT[i*3+2]+')';
-    octx.fillRect(px+i*bw, base-h, Math.max(1,bw), h);
+  const bw = pw/256, lanesTop = py+head, axisY = lanesTop + lanes.length*laneH;
+  // graticule: 10-bit code values every 128, labels every 256 + 1023
+  octx.font = '9px sans-serif'; octx.textAlign = 'center';
+  for(let v=0; v<=1024; v+=128){
+    const code = Math.min(1023, v), x = px + code/1023*pw;
+    octx.fillStyle = 'rgba(255,255,255,.10)'; octx.fillRect(Math.round(x), lanesTop, 1, lanes.length*laneH);
+    if(v%256===0 || code===1023){ octx.fillStyle = 'rgba(255,255,255,.55)'; octx.fillText(scaleLabel(code), Math.min(px+pw-12, Math.max(px+10, x)), axisY+11); }
   }
-  octx.font = '9px sans-serif'; octx.textAlign = 'center'; octx.fillStyle = 'rgba(255,255,255,.6)';
-  for(const [v,lbl] of [[118,'18%'],[152,'skin'],[253,'clip']]){
-    const x = px+v*bw; octx.fillRect(x, base, 1, 4); octx.fillText(lbl, x, base+13);
-  }
-  octx.textAlign = 'left';
-  let acc = 0, p2 = -1, p98 = -1, crushed = 0, clipped = 0;
-  for(let i=0;i<256;i++){
-    acc += fcHist[i];
-    if(p2<0 && acc >= total*0.02) p2 = i;
-    if(p98<0 && acc >= total*0.98) p98 = i;
-    if(i<=6) crushed += fcHist[i];
-    if(i>=253) clipped += fcHist[i];
-  }
-  const span = Math.log2(srgb2lin(p98) / Math.max(srgb2lin(p2), 1e-5));
-  const pct = n => (100*n/total).toFixed(n/total < 0.001 && n ? 2 : 1);
-  octx.font = 'bold 10px sans-serif'; octx.fillStyle = '#eceade';
-  octx.fillText('RANGE '+span.toFixed(1)+' stops', px+6, py+12);
-  octx.font = '10px sans-serif'; octx.fillStyle = 'rgba(236,234,222,.6)';
-  octx.fillText(pct(crushed)+'% crushed · '+pct(clipped)+'% clipped', px+118, py+12);
-}
-
-// RGB mode: three channel histograms composited additively (overlap reads white), with
-// mean channel balance vs green in stops (a direct white-balance / grade cue) and
-// per-channel clip percentages, since a channel can clip while luma still looks safe.
-function drawRGBHistogram(px, py, pw, bw, base, top, total){
-  let max = 1;
-  for(let i=0;i<256;i++){ max = Math.max(max, rHist[i], gHist[i], bHist[i]); }
-  const lmax = Math.log(1+max);
-  octx.save(); octx.globalCompositeOperation = 'lighter';
-  for(const [hist, col] of [[rHist,'rgba(235,60,50,.85)'],[gHist,'rgba(60,200,80,.85)'],[bHist,'rgba(70,110,255,.85)']]){
-    octx.fillStyle = col;
+  // lanes (auto-gain: lane max taken at the 99.5th-percentile bin so one spike can't flatten the rest)
+  lanes.forEach(([name, hist, col], li)=>{
+    const top = lanesTop + li*laneH, base = top + laneH - 2;
+    if(li){ octx.fillStyle = 'rgba(255,255,255,.08)'; octx.fillRect(px, top, pw, 1); }
+    const sorted = Array.from(hist).sort((a,b)=>a-b), gmax = Math.max(1, sorted[Math.floor(255*0.995)]);
     for(let i=0;i<256;i++){
       if(!hist[i]) continue;
-      const h = top*Math.log(1+hist[i])/lmax;
-      octx.fillRect(px+i*bw, base-h, Math.max(1,bw), h);
+      const h = Math.min(laneH-4, (laneH-4)*hist[i]/gmax);
+      octx.fillStyle = col || 'rgb('+FC_LUT[i*3]+','+FC_LUT[i*3+1]+','+FC_LUT[i*3+2]+')';
+      octx.fillRect(px + i/255*pw, base-h, Math.max(1,bw), h);
     }
+    octx.textAlign = 'left'; octx.font = 'bold 9px sans-serif'; octx.fillStyle = col || 'rgba(236,234,222,.85)';
+    octx.fillText(name, px+4, top+10);
+  });
+  // reference levels: legal video range 64 / 940 on the 10-bit scale
+  octx.setLineDash([3,3]); octx.strokeStyle = 'rgba(245,197,24,.75)'; octx.lineWidth = 1;
+  octx.font = '8px sans-serif'; octx.fillStyle = 'rgba(245,197,24,.85)';
+  for(const code of [64, 940]){
+    const x = Math.round(px + code/1023*pw)+.5;
+    octx.beginPath(); octx.moveTo(x, lanesTop); octx.lineTo(x, axisY); octx.stroke();
+    octx.textAlign = code===64 ? 'left' : 'right';
+    octx.fillText(scaleLabel(code), x + (code===64 ? 3 : -3), lanesTop+8);
   }
-  octx.restore();
-  let mr=0, mg=0, mb=0, cr=0, cg=0, cb=0;
-  for(let i=0;i<256;i++){
-    const l = srgb2lin(i);
-    mr += rHist[i]*l; mg += gHist[i]*l; mb += bHist[i]*l;
-    if(i>=253){ cr += rHist[i]; cg += gHist[i]; cb += bHist[i]; }
-  }
-  const st = x => (x>=0?'+':'')+x.toFixed(1);
-  const rb = Math.log2(Math.max(mr,1e-6)/Math.max(mg,1e-6)), bb = Math.log2(Math.max(mb,1e-6)/Math.max(mg,1e-6));
-  const pct = n => (100*n/total).toFixed(n/total < 0.001 && n ? 2 : 1);
-  octx.font = 'bold 10px sans-serif'; octx.fillStyle = '#eceade';
-  octx.fillText('BALANCE R '+st(rb)+' · B '+st(bb)+' st vs G', px+6, py+12);
-  octx.font = '9px sans-serif'; octx.textAlign = 'center'; octx.fillStyle = 'rgba(255,255,255,.6)';
-  octx.fillRect(px+253*bw, base, 1, 4);
-  octx.fillText('clip R '+pct(cr)+'% · G '+pct(cg)+'% · B '+pct(cb)+'%', px+pw/2, base+13);
+  octx.setLineDash([]); octx.textAlign = 'left';
+  // header: readouts left, mode/scale right
+  octx.font = '9px sans-serif'; octx.textAlign = 'right'; octx.fillStyle = 'rgba(255,255,255,.45)';
+  octx.fillText((histMode==='yrgb'?'YRGB':'RGB')+' · '+(histScale==='10bit'?'10-bit':'%')+' · tap', px+pw-6, py+11);
   octx.textAlign = 'left';
+  const pct = n => (100*n/total).toFixed(n/total < 0.001 && n ? 2 : 1);
+  if(histMode==='yrgb'){
+    let acc = 0, p2 = -1, p98 = -1, below = 0, above = 0;
+    for(let i=0;i<256;i++){
+      acc += fcHist[i];
+      if(p2<0 && acc >= total*0.02) p2 = i;
+      if(p98<0 && acc >= total*0.98) p98 = i;
+      if(to10(i) < 64) below += fcHist[i];
+      if(to10(i) > 940) above += fcHist[i];
+    }
+    octx.font = 'bold 10px sans-serif'; octx.fillStyle = '#eceade';
+    octx.fillText('Y '+scaleLabel(to10(p2))+'–'+scaleLabel(to10(p98)), px+6, py+11);
+    octx.font = '10px sans-serif'; octx.fillStyle = 'rgba(236,234,222,.6)';
+    octx.fillText(pct(below)+'% <'+scaleLabel(64)+' · '+pct(above)+'% >'+scaleLabel(940), px+96, py+11);
+  } else {
+    let mr=0, mg=0, mb=0;
+    for(let i=0;i<256;i++){ const l = srgb2lin(i); mr += rHist[i]*l; mg += gHist[i]*l; mb += bHist[i]*l; }
+    const st = x => (x>=0?'+':'')+x.toFixed(1);
+    const rb = Math.log2(Math.max(mr,1e-6)/Math.max(mg,1e-6)), bb = Math.log2(Math.max(mb,1e-6)/Math.max(mg,1e-6));
+    octx.font = 'bold 10px sans-serif'; octx.fillStyle = '#eceade';
+    octx.fillText('BALANCE R '+st(rb)+' · B '+st(bb)+' st vs G', px+6, py+11);
+  }
 }
 
 // ---------- gel calculator ----------
