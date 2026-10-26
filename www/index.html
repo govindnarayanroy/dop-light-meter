@@ -420,8 +420,15 @@ function solve4(A,B){
 
 // Map a tap on the overlay to video pixel coords (object-fit: cover math)
 overlay.addEventListener('pointerdown', ev=>{
-  if(!video.videoWidth || mode==='face') return;
+  if(!video.videoWidth) return;
   const r = overlay.getBoundingClientRect();
+  if(fcOn){
+    const ox = ev.clientX - r.left, oy = ev.clientY - r.top;
+    if(ox>=HIST.px && ox<=HIST.px+HIST.pw && oy>=HIST.py && oy<=HIST.py+HIST.ph){
+      histMode = histMode==='luma' ? 'rgb' : 'luma'; return;
+    }
+  }
+  if(mode==='face') return;
   const scale = Math.max(r.width/video.videoWidth, r.height/video.videoHeight);
   const dispW = video.videoWidth*scale, dispH = video.videoHeight*scale;
   const offX = (dispW - r.width)/2, offY = (dispH - r.height)/2;
@@ -506,14 +513,99 @@ function drawFalseColor(scale, offX, offY){
   fcCtx.drawImage(video, 0, 0, fw, fh);
   const id = fcCtx.getImageData(0, 0, fw, fh);
   const d = id.data;
+  fcHist.fill(0); rHist.fill(0); gHist.fill(0); bHist.fill(0);
   for(let i=0; i<d.length; i+=4){
     const y = Math.min(255, Math.round(0.2126*d[i] + 0.7152*d[i+1] + 0.0722*d[i+2]));
+    fcHist[y]++; rHist[d[i]]++; gHist[d[i+1]]++; bHist[d[i+2]]++;
     d[i]=FC_LUT[y*3]; d[i+1]=FC_LUT[y*3+1]; d[i+2]=FC_LUT[y*3+2];
   }
   fcCtx.putImageData(id, 0, 0);
   octx.imageSmoothingEnabled = false;
   octx.drawImage(fcCanvas, -offX, -offY, video.videoWidth*scale, video.videoHeight*scale);
   octx.imageSmoothingEnabled = true;
+  drawHistogram();
+}
+
+// Luma histogram for FC mode: bars take the false-color band of their bin, log-scaled so
+// shadow detail stays visible; the range line is the 2nd-to-98th percentile span in stops.
+const fcHist = new Uint32Array(256), rHist = new Uint32Array(256), gHist = new Uint32Array(256), bHist = new Uint32Array(256);
+let histMode = 'luma';          // 'luma' | 'rgb'  (tap the panel to toggle)
+const HIST = { px:12, ph:66, pw:0, py:0 };   // panel rect in overlay px, kept for hit-testing
+function drawHistogram(){
+  const W = overlay.width, H = overlay.height;
+  const pw = W-24, ph = HIST.ph, px = HIST.px, py = H-36-ph;
+  HIST.pw = pw; HIST.py = py;
+  if(pw < 120 || py < 0) return;
+  octx.fillStyle = 'rgba(16,16,12,.78)'; octx.fillRect(px, py, pw, ph);
+  octx.strokeStyle = 'rgba(255,255,255,.14)'; octx.lineWidth = 1; octx.strokeRect(px+.5, py+.5, pw-1, ph-1);
+  let max = 1, total = 0;
+  for(let i=0;i<256;i++){ total += fcHist[i]; if(fcHist[i]>max) max = fcHist[i]; }
+  if(!total) return;
+  const bw = pw/256, base = py+ph-15, top = ph-30;
+  octx.font = '9px sans-serif'; octx.textAlign = 'right'; octx.fillStyle = 'rgba(255,255,255,.45)';
+  octx.fillText(histMode==='luma' ? 'LUMA · tap for RGB' : 'RGB · tap for LUMA', px+pw-6, py+12);
+  octx.textAlign = 'left';
+  if(histMode==='rgb'){ drawRGBHistogram(px, py, pw, bw, base, top, total); return; }
+  const lmax = Math.log(1+max);
+  for(let i=0;i<256;i++){
+    if(!fcHist[i]) continue;
+    const h = top*Math.log(1+fcHist[i])/lmax;
+    octx.fillStyle = 'rgb('+FC_LUT[i*3]+','+FC_LUT[i*3+1]+','+FC_LUT[i*3+2]+')';
+    octx.fillRect(px+i*bw, base-h, Math.max(1,bw), h);
+  }
+  octx.font = '9px sans-serif'; octx.textAlign = 'center'; octx.fillStyle = 'rgba(255,255,255,.6)';
+  for(const [v,lbl] of [[118,'18%'],[152,'skin'],[253,'clip']]){
+    const x = px+v*bw; octx.fillRect(x, base, 1, 4); octx.fillText(lbl, x, base+13);
+  }
+  octx.textAlign = 'left';
+  let acc = 0, p2 = -1, p98 = -1, crushed = 0, clipped = 0;
+  for(let i=0;i<256;i++){
+    acc += fcHist[i];
+    if(p2<0 && acc >= total*0.02) p2 = i;
+    if(p98<0 && acc >= total*0.98) p98 = i;
+    if(i<=6) crushed += fcHist[i];
+    if(i>=253) clipped += fcHist[i];
+  }
+  const span = Math.log2(srgb2lin(p98) / Math.max(srgb2lin(p2), 1e-5));
+  const pct = n => (100*n/total).toFixed(n/total < 0.001 && n ? 2 : 1);
+  octx.font = 'bold 10px sans-serif'; octx.fillStyle = '#eceade';
+  octx.fillText('RANGE '+span.toFixed(1)+' stops', px+6, py+12);
+  octx.font = '10px sans-serif'; octx.fillStyle = 'rgba(236,234,222,.6)';
+  octx.fillText(pct(crushed)+'% crushed · '+pct(clipped)+'% clipped', px+118, py+12);
+}
+
+// RGB mode: three channel histograms composited additively (overlap reads white), with
+// mean channel balance vs green in stops (a direct white-balance / grade cue) and
+// per-channel clip percentages, since a channel can clip while luma still looks safe.
+function drawRGBHistogram(px, py, pw, bw, base, top, total){
+  let max = 1;
+  for(let i=0;i<256;i++){ max = Math.max(max, rHist[i], gHist[i], bHist[i]); }
+  const lmax = Math.log(1+max);
+  octx.save(); octx.globalCompositeOperation = 'lighter';
+  for(const [hist, col] of [[rHist,'rgba(235,60,50,.85)'],[gHist,'rgba(60,200,80,.85)'],[bHist,'rgba(70,110,255,.85)']]){
+    octx.fillStyle = col;
+    for(let i=0;i<256;i++){
+      if(!hist[i]) continue;
+      const h = top*Math.log(1+hist[i])/lmax;
+      octx.fillRect(px+i*bw, base-h, Math.max(1,bw), h);
+    }
+  }
+  octx.restore();
+  let mr=0, mg=0, mb=0, cr=0, cg=0, cb=0;
+  for(let i=0;i<256;i++){
+    const l = srgb2lin(i);
+    mr += rHist[i]*l; mg += gHist[i]*l; mb += bHist[i]*l;
+    if(i>=253){ cr += rHist[i]; cg += gHist[i]; cb += bHist[i]; }
+  }
+  const st = x => (x>=0?'+':'')+x.toFixed(1);
+  const rb = Math.log2(Math.max(mr,1e-6)/Math.max(mg,1e-6)), bb = Math.log2(Math.max(mb,1e-6)/Math.max(mg,1e-6));
+  const pct = n => (100*n/total).toFixed(n/total < 0.001 && n ? 2 : 1);
+  octx.font = 'bold 10px sans-serif'; octx.fillStyle = '#eceade';
+  octx.fillText('BALANCE R '+st(rb)+' · B '+st(bb)+' st vs G', px+6, py+12);
+  octx.font = '9px sans-serif'; octx.textAlign = 'center'; octx.fillStyle = 'rgba(255,255,255,.6)';
+  octx.fillRect(px+253*bw, base, 1, 4);
+  octx.fillText('clip R '+pct(cr)+'% · G '+pct(cg)+'% · B '+pct(cb)+'%', px+pw/2, base+13);
+  octx.textAlign = 'left';
 }
 
 // ---------- gel calculator ----------
